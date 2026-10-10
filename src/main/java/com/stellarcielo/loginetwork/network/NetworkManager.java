@@ -13,10 +13,12 @@ import org.jspecify.annotations.Nullable;
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import com.stellarcielo.loginetwork.LogiNetwork;
+import com.stellarcielo.loginetwork.address.Ipv4Address;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 import com.stellarcielo.loginetwork.network.control.ControlPlane;
 import com.stellarcielo.loginetwork.network.payload.TransitHopPayload;
+import com.stellarcielo.loginetwork.network.routing.RoutingService;
 import com.stellarcielo.loginetwork.network.payload.TransitRemovePayload;
 
 import net.minecraft.core.BlockPos;
@@ -28,6 +30,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.saveddata.SavedData;
 import net.minecraft.world.level.saveddata.SavedDataType;
@@ -61,8 +64,8 @@ public final class NetworkManager extends SavedData {
     private final List<TransitPacket> packets;
     // Nodes with at least one extracting side.
     private final Set<BlockPos> extractNodes;
-    // Route cache keyed by origin cable; cleared whenever the topology changes.
-    private final Map<BlockPos, CableNetwork> networkCache = new HashMap<>();
+    // Segment cache keyed by origin node (or router port); cleared whenever the topology changes.
+    private final Map<Object, CableNetwork> networkCache = new HashMap<>();
     private long nextRequestId;
     private final ControlPlane controlPlane = new ControlPlane(this);
 
@@ -118,7 +121,14 @@ public final class NetworkManager extends SavedData {
     }
 
     public CableNetwork network(ServerLevel level, BlockPos origin) {
-        return networkCache.computeIfAbsent(origin.immutable(), o -> CableNetwork.explore(level, o));
+        return networkCache.computeIfAbsent(origin.immutable(), o -> CableNetwork.explore(level, (BlockPos) o));
+    }
+
+    private record PortKey(BlockPos routerPos, Direction port) {}
+
+    // The segment on one port of a router.
+    public CableNetwork portNetwork(ServerLevel level, BlockPos routerPos, Direction port) {
+        return networkCache.computeIfAbsent(new PortKey(routerPos.immutable(), port), k -> CableNetwork.explorePort(level, routerPos, port));
     }
 
     // ---- tick -----------------------------------------------------------------------------------
@@ -183,7 +193,7 @@ public final class NetworkManager extends SavedData {
             nodes.addAll(network.pathTo(destination.endpoint.nodePos()));
             nodes.add(destination.endpoint.inventoryPos());
             launch(level, new TransitPacket(nextId++, resource.toStack(extracted), nodes, true, 0, gameTime, 0, inventoryPos, false, 0,
-                    TransitPacket.NO_REQUEST, null), gameTime);
+                    TransitPacket.NO_REQUEST, null, null), gameTime);
             return;
         }
     }
@@ -196,24 +206,55 @@ public final class NetworkManager extends SavedData {
 
     // ---- request deliveries ---------------------------------------------------------------------
 
-    // Whether a delivery between the inventories in front of two interfaces has a route right now.
-    public boolean canShip(ServerLevel level, BlockPos fromInterface, BlockPos toInterface) {
-        return network(level, fromInterface).contains(toInterface) && level.getBlockState(toInterface).getBlock() instanceof NetworkInterfaceBlock;
+    // Whether the interface holding an address can be reached from an interface right now.
+    public boolean canShip(ServerLevel level, BlockPos fromInterface, Ipv4Address destination) {
+        return routeToInventory(level, fromInterface, destination) != null;
+    }
+
+    // Path from a node to the inventory in front of the interface holding an address (inventory included).
+    private @Nullable List<BlockPos> routeToInventory(ServerLevel level, BlockPos from, Ipv4Address destination) {
+        List<BlockPos> path = RoutingService.resolve(level, from, destination);
+        if (path == null || path.isEmpty()) {
+            return null;
+        }
+        BlockState target = level.getBlockState(path.get(path.size() - 1));
+        if (!(target.getBlock() instanceof NetworkInterfaceBlock)) {
+            return null;
+        }
+        List<BlockPos> withInventory = new ArrayList<>(path);
+        withInventory.add(path.get(path.size() - 1).relative(target.getValue(NetworkInterfaceBlock.FACING)));
+        return withInventory;
     }
 
     // Sends items already taken out of the supplier's inventory, in packets of at most one stack.
-    public void ship(ServerLevel level, BlockPos fromInterface, BlockPos toInterface, ItemStack items, long requestId) {
+    public void ship(ServerLevel level, BlockPos fromInterface, Ipv4Address destination, ItemStack items, long requestId, @Nullable Ipv4Address supplier) {
         BlockPos supplierInventory = fromInterface.relative(level.getBlockState(fromInterface).getValue(NetworkInterfaceBlock.FACING));
-        BlockPos requesterInventory = toInterface.relative(level.getBlockState(toInterface).getValue(NetworkInterfaceBlock.FACING));
-        List<BlockPos> nodes = new ArrayList<>();
-        nodes.add(supplierInventory);
-        nodes.addAll(network(level, fromInterface).pathTo(toInterface));
-        nodes.add(requesterInventory);
+        List<BlockPos> route = routeToInventory(level, fromInterface, destination);
         long gameTime = level.getGameTime();
         int packetSize = Math.max(1, items.getMaxStackSize());
         while (!items.isEmpty()) {
             ItemStack part = items.split(packetSize);
-            launch(level, new TransitPacket(nextId++, part, nodes, true, 0, gameTime, 0, supplierInventory, false, 0, requestId, fromInterface), gameTime);
+            if (route == null) {
+                // The route vanished between RESERVE and shipping: put the items back, or drop them if they no longer fit.
+                Block.popResource(level, supplierInventory, returnToInventory(level, fromInterface, supplierInventory, part));
+                continue;
+            }
+            List<BlockPos> nodes = new ArrayList<>();
+            nodes.add(supplierInventory);
+            nodes.addAll(route);
+            launch(level, new TransitPacket(nextId++, part, nodes, true, 0, gameTime, 0, supplierInventory, false, 0, requestId, supplier, destination), gameTime);
+        }
+    }
+
+    private static ItemStack returnToInventory(ServerLevel level, BlockPos interfacePos, BlockPos inventoryPos, ItemStack stack) {
+        ResourceHandler<ItemResource> handler = itemHandler(level, inventoryPos, directionBetween(inventoryPos, interfacePos));
+        if (handler == null || stack.isEmpty()) {
+            return stack;
+        }
+        try (Transaction tx = Transaction.openRoot()) {
+            int inserted = handler.insert(ItemResource.of(stack), stack.getCount(), tx);
+            tx.commit();
+            return stack.copyWithCount(stack.getCount() - inserted);
         }
     }
 
@@ -267,7 +308,7 @@ public final class NetworkManager extends SavedData {
             }
             if (inserted > 0 && packet.requestId != TransitPacket.NO_REQUEST
                     && level.getBlockEntity(lastNode) instanceof NetworkInterfaceBlockEntity requester) {
-                requester.host().onDelivered(level, packet.requestId, packet.stack, inserted, packet.replyTo);
+                requester.host().onDelivered(level, packet.requestId, packet.stack, inserted, packet.replyAddress);
             }
             packet.stack.shrink(inserted);
         }
@@ -279,7 +320,8 @@ public final class NetworkManager extends SavedData {
         return reroute(level, packet, lastNode, inventoryPos, gameTime);
     }
 
-    // Order: another destination, then back to the source, then drop on the spot.
+    // Push packets: another destination in the segment, then back to the source, then drop on the spot.
+    // Request deliveries: a new route to the requester (link broke), else back to the supplier, then as above.
     private boolean reroute(ServerLevel level, TransitPacket packet, BlockPos fromNode, @Nullable BlockPos comingOutOf, long gameTime) {
         Vec3 here = packet.currentPosition(gameTime);
         if (packet.reroutes >= MAX_REROUTES || !NetworkNodes.isNode(level.getBlockState(fromNode))) {
@@ -287,6 +329,27 @@ public final class NetworkManager extends SavedData {
             return true;
         }
         packet.reroutes++;
+        if (packet.requestId != TransitPacket.NO_REQUEST) {
+            List<BlockPos> route = null;
+            if (!packet.returning && comingOutOf == null && packet.destinationAddress != null) {
+                route = routeToInventory(level, fromNode, packet.destinationAddress);
+            }
+            if (route == null && packet.replyAddress != null) {
+                route = routeToInventory(level, fromNode, packet.replyAddress);
+                packet.returning = route != null || packet.returning;
+            }
+            if (route != null) {
+                List<BlockPos> nodes = new ArrayList<>();
+                if (comingOutOf != null) {
+                    nodes.add(comingOutOf);
+                }
+                nodes.addAll(route);
+                packet.setRoute(nodes, comingOutOf != null);
+                startHop(level, packet, gameTime);
+                setDirty();
+                return false;
+            }
+        }
         CableNetwork network = network(level, fromNode);
         ItemResource resource = ItemResource.of(packet.stack);
         Destination destination = null;

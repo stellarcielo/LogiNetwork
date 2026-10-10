@@ -1,0 +1,282 @@
+package com.stellarcielo.loginetwork.block.entity;
+
+import java.util.ArrayList;
+import java.util.EnumMap;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import org.jspecify.annotations.Nullable;
+
+import com.stellarcielo.loginetwork.address.Ipv4Address;
+import com.stellarcielo.loginetwork.address.Ipv4Interface;
+import com.stellarcielo.loginetwork.address.MacAddress;
+import com.stellarcielo.loginetwork.network.CableNetwork;
+import com.stellarcielo.loginetwork.network.NetworkManager;
+import com.stellarcielo.loginetwork.network.control.ControlEndpoint;
+import com.stellarcielo.loginetwork.network.control.ControlMessage;
+import com.stellarcielo.loginetwork.network.control.ControlMessageType;
+import com.stellarcielo.loginetwork.network.routing.Lsa;
+import com.stellarcielo.loginetwork.network.routing.RouteDecision;
+import com.stellarcielo.loginetwork.network.routing.ShortestPaths;
+import com.stellarcielo.loginetwork.registry.ModBlockEntities;
+
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.RandomSource;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.storage.ValueInput;
+import net.minecraft.world.level.storage.ValueOutput;
+
+// Link-state router. Each of its six faces is a port into a separate segment.
+// Every REFRESH_INTERVAL ticks it rebuilds its own LSA from what it sees on its ports; when that changes it
+// floods the new version to its neighbours, who flood it on. Dijkstra runs only when the database changes.
+public class RouterBlockEntity extends BlockEntity implements ControlEndpoint {
+    private static final int REFRESH_INTERVAL = 20;
+    // Re-flood our LSA this often even without changes, and forget others not refreshed for three times as long.
+    private static final long LSA_REFRESH_TICKS = 600;
+    private static final long LSA_MAX_AGE_TICKS = 3 * LSA_REFRESH_TICKS;
+
+    private record NeighbourInfo(BlockPos pos, Direction port) {}
+
+    private MacAddress routerId;
+    private final Map<Direction, Ipv4Interface> portAddresses = new EnumMap<>(Direction.class);
+
+    // Runtime state, rebuilt after loading.
+    private final Map<MacAddress, Lsa> database = new HashMap<>();
+    private final Map<MacAddress, Long> lastHeard = new HashMap<>();
+    private final Map<MacAddress, NeighbourInfo> neighbours = new HashMap<>();
+    private @Nullable Lsa self;
+    private long lastFlood;
+    private Map<MacAddress, ShortestPaths.Path> paths = Map.of();
+    private boolean routesDirty = true;
+    private int refreshCooldown;
+
+    public RouterBlockEntity(BlockPos pos, BlockState state) {
+        super(ModBlockEntities.ROUTER.get(), pos, state);
+        // Replaced by the saved value when loading an existing router.
+        this.routerId = MacAddress.random(RandomSource.create());
+    }
+
+    public MacAddress routerId() {
+        return routerId;
+    }
+
+    public Map<Direction, Ipv4Interface> portAddresses() {
+        return portAddresses;
+    }
+
+    public void setPortAddress(Direction port, @Nullable Ipv4Interface address) {
+        if (address == null) {
+            portAddresses.remove(port);
+        } else {
+            portAddresses.put(port, address);
+        }
+        refreshCooldown = 0;
+        setChanged();
+    }
+
+    public Map<MacAddress, Lsa> database() {
+        return database;
+    }
+
+    public Map<MacAddress, ShortestPaths.Path> paths() {
+        ensureRoutes();
+        return paths;
+    }
+
+    // ---- tick -----------------------------------------------------------------------------------
+
+    public static void serverTick(Level level, BlockPos pos, BlockState state, RouterBlockEntity router) {
+        if (router.refreshCooldown-- > 0) {
+            return;
+        }
+        router.refreshCooldown = REFRESH_INTERVAL;
+        router.refresh((ServerLevel) level);
+    }
+
+    private void refresh(ServerLevel level) {
+        long now = level.getGameTime();
+        Set<MacAddress> previousNeighbours = new HashSet<>(neighbours.keySet());
+        Lsa local = buildLocalLsa(level);
+        if (self == null || !local.sameContent(self) || now - lastFlood >= LSA_REFRESH_TICKS) {
+            self = local.withSeq(self == null ? now : Math.max(self.seq() + 1, now));
+            database.put(routerId, self);
+            lastHeard.put(routerId, now);
+            routesDirty = true;
+            lastFlood = now;
+            flood(level, self, null);
+        }
+        // Database exchange with new neighbours, so a router that just appeared learns everything at once.
+        for (Map.Entry<MacAddress, NeighbourInfo> entry : neighbours.entrySet()) {
+            if (!previousNeighbours.contains(entry.getKey())) {
+                for (Lsa lsa : database.values()) {
+                    sendLsa(level, lsa, entry.getValue());
+                }
+            }
+        }
+        if (database.entrySet().removeIf(entry -> !entry.getKey().equals(routerId)
+                && now - lastHeard.getOrDefault(entry.getKey(), now) > LSA_MAX_AGE_TICKS)) {
+            routesDirty = true;
+        }
+    }
+
+    private Lsa buildLocalLsa(ServerLevel level) {
+        NetworkManager manager = NetworkManager.get(level);
+        neighbours.clear();
+        List<Lsa.Link> links = new ArrayList<>();
+        List<Lsa.HostRoute> hosts = new ArrayList<>();
+        for (Direction port : Direction.values()) {
+            CableNetwork segment = manager.portNetwork(level, worldPosition, port);
+            for (CableNetwork.RouterAttachment attachment : segment.routers()) {
+                if (!attachment.routerPos().equals(worldPosition) && level.getBlockEntity(attachment.routerPos()) instanceof RouterBlockEntity neighbour) {
+                    links.add(new Lsa.Link(neighbour.routerId, port, segment.distanceTo(attachment.routerPos())));
+                    neighbours.putIfAbsent(neighbour.routerId, new NeighbourInfo(attachment.routerPos(), port));
+                }
+            }
+            for (BlockPos hostPos : segment.interfaces()) {
+                if (level.getBlockEntity(hostPos) instanceof NetworkInterfaceBlockEntity host && host.hasUsableAddress() && host.assigned() != null) {
+                    hosts.add(new Lsa.HostRoute(host.assigned().address(), port));
+                }
+            }
+        }
+        List<Lsa.PortAddress> addresses = new ArrayList<>();
+        portAddresses.forEach((port, address) -> addresses.add(new Lsa.PortAddress(port, address)));
+        return new Lsa(routerId, 0L, worldPosition, links, hosts, addresses, List.of());
+    }
+
+    private void flood(ServerLevel level, Lsa lsa, @Nullable BlockPos except) {
+        for (NeighbourInfo neighbour : neighbours.values()) {
+            if (!neighbour.pos().equals(except)) {
+                sendLsa(level, lsa, neighbour);
+            }
+        }
+    }
+
+    private void sendLsa(ServerLevel level, Lsa lsa, NeighbourInfo neighbour) {
+        CableNetwork segment = NetworkManager.get(level).portNetwork(level, worldPosition, neighbour.port());
+        if (!segment.contains(neighbour.pos())) {
+            return;
+        }
+        ControlMessage.Content content = ControlMessage.Content.of(ControlMessageType.LSA, routerId, null, worldPosition).withBody(lsa);
+        NetworkManager.get(level).controlPlane().sendAlongPath(level, content, segment.pathTo(neighbour.pos()));
+    }
+
+    @Override
+    public void onControlMessage(ServerLevel level, ControlMessage message) {
+        if (message.type == ControlMessageType.LSA && message.body() instanceof Lsa lsa) {
+            receiveLsa(level, lsa, message.sourcePos);
+        }
+    }
+
+    private void receiveLsa(ServerLevel level, Lsa lsa, BlockPos from) {
+        if (lsa.routerId().equals(routerId)) {
+            return;
+        }
+        Lsa known = database.get(lsa.routerId());
+        long now = level.getGameTime();
+        if (known != null && lsa.seq() <= known.seq()) {
+            if (lsa.seq() == known.seq()) {
+                lastHeard.put(lsa.routerId(), now);
+            }
+            return;
+        }
+        database.put(lsa.routerId(), lsa);
+        lastHeard.put(lsa.routerId(), now);
+        routesDirty = true;
+        flood(level, lsa, from);
+    }
+
+    // ---- forwarding -----------------------------------------------------------------------------
+
+    private void ensureRoutes() {
+        if (routesDirty) {
+            paths = ShortestPaths.compute(routerId, database);
+            routesDirty = false;
+        }
+    }
+
+    // Directly attached hosts first, then the longest matching prefix among other routers' hosts (/32) and
+    // port subnets, cheapest on ties. Returns null when there is no route.
+    public @Nullable RouteDecision lookup(Ipv4Address destination) {
+        if (self == null) {
+            return null;
+        }
+        for (Lsa.HostRoute host : self.hosts()) {
+            if (host.address().equals(destination)) {
+                return new RouteDecision.Deliver(host.port(), 0);
+            }
+        }
+        ensureRoutes();
+        RouteDecision best = null;
+        int bestPrefix = -1;
+        for (Lsa.PortAddress portAddress : self.portAddresses()) {
+            Ipv4Interface subnet = portAddress.address();
+            if (subnet.prefixLength() > bestPrefix && destination.inSubnet(subnet.address(), subnet.prefixLength())) {
+                best = new RouteDecision.Deliver(portAddress.port(), 0);
+                bestPrefix = subnet.prefixLength();
+            }
+        }
+        for (Map.Entry<MacAddress, ShortestPaths.Path> entry : paths.entrySet()) {
+            Lsa lsa = database.get(entry.getKey());
+            NeighbourInfo firstHop = neighbours.get(entry.getValue().firstHop());
+            if (lsa == null || firstHop == null) {
+                continue;
+            }
+            int prefix = matchLength(lsa, destination);
+            int cost = entry.getValue().cost();
+            if (prefix > bestPrefix || (prefix == bestPrefix && prefix >= 0 && best != null && cost < best.cost())) {
+                best = new RouteDecision.Forward(entry.getValue().firstPort(), firstHop.pos(), cost);
+                bestPrefix = prefix;
+            }
+        }
+        return best;
+    }
+
+    private static int matchLength(Lsa lsa, Ipv4Address destination) {
+        for (Lsa.HostRoute host : lsa.hosts()) {
+            if (host.address().equals(destination)) {
+                return 32;
+            }
+        }
+        int best = -1;
+        for (Lsa.PortAddress portAddress : lsa.portAddresses()) {
+            Ipv4Interface subnet = portAddress.address();
+            if (subnet.prefixLength() > best && destination.inSubnet(subnet.address(), subnet.prefixLength())) {
+                best = subnet.prefixLength();
+            }
+        }
+        return best;
+    }
+
+    public void openScreen(ServerPlayer player) {
+        // The router screen arrives with static routes.
+    }
+
+    // ---- persistence ----------------------------------------------------------------------------
+
+    @Override
+    protected void saveAdditional(ValueOutput output) {
+        super.saveAdditional(output);
+        output.store("router_id", MacAddress.CODEC, routerId);
+        for (Direction port : Direction.values()) {
+            output.storeNullable("port_" + port.getSerializedName(), Ipv4Interface.CODEC, portAddresses.get(port));
+        }
+    }
+
+    @Override
+    protected void loadAdditional(ValueInput input) {
+        super.loadAdditional(input);
+        input.read("router_id", MacAddress.CODEC).ifPresent(value -> routerId = value);
+        portAddresses.clear();
+        for (Direction port : Direction.values()) {
+            input.read("port_" + port.getSerializedName(), Ipv4Interface.CODEC).ifPresent(address -> portAddresses.put(port, address));
+        }
+    }
+}

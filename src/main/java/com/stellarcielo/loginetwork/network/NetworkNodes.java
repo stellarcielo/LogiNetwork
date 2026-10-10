@@ -7,6 +7,7 @@ import com.stellarcielo.loginetwork.block.AccessSwitchBlock;
 import com.stellarcielo.loginetwork.block.CableBlock;
 import com.stellarcielo.loginetwork.block.DhcpServerBlock;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
+import com.stellarcielo.loginetwork.block.RouterBlock;
 
 import net.minecraft.core.Direction;
 import net.minecraft.world.level.block.state.BlockState;
@@ -19,7 +20,8 @@ public final class NetworkNodes {
         return state.getBlock() instanceof CableBlock
                 || state.getBlock() instanceof NetworkInterfaceBlock
                 || state.getBlock() instanceof DhcpServerBlock
-                || state.getBlock() instanceof AccessSwitchBlock;
+                || state.getBlock() instanceof AccessSwitchBlock
+                || state.getBlock() instanceof RouterBlock;
     }
 
     public static List<Direction> extractSides(BlockState state) {

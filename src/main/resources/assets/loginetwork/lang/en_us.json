@@ -56,5 +56,6 @@
   "gui.loginetwork.switch.port.west": "West",
   "gui.loginetwork.switch.port.up": "Up",
   "gui.loginetwork.switch.port.down": "Down",
-  "item.loginetwork.control_packet": "Control Packet"
+  "item.loginetwork.control_packet": "Control Packet",
+  "block.loginetwork.router": "Router"
 }

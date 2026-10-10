@@ -11,16 +11,20 @@ import com.stellarcielo.loginetwork.block.AccessSwitchBlock;
 import com.stellarcielo.loginetwork.block.CableBlock;
 import com.stellarcielo.loginetwork.block.DhcpServerBlock;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
+import com.stellarcielo.loginetwork.block.RouterBlock;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.capabilities.Capabilities;
+import org.jspecify.annotations.Nullable;
 
 // Breadth-first view of a cable network as seen from one node. Built on topology change, then reused.
 // Cables and switches relay between all their connections. Interfaces and DHCP servers are leaves: they
-// are reached but never relay, except when the search starts from them.
+// are reached but never relay, except when the search starts from them. Routers bound the segment: they
+// are reached but never relay, and a search from a router covers only the segment on one of its ports.
+// A CableNetwork is therefore exactly one segment (one broadcast domain).
 public final class CableNetwork {
     // A node side that faces an inventory: a cable's inventory connection or an interface's front.
     public record Endpoint(BlockPos nodePos, Direction side, boolean extract) {
@@ -35,20 +39,36 @@ public final class CableNetwork {
     private final List<Endpoint> endpoints;
     private final List<BlockPos> interfaces;
     private final List<BlockPos> dhcpServers;
+    private final List<RouterAttachment> routers;
 
-    private CableNetwork(BlockPos origin, Map<BlockPos, BlockPos> parents, List<Endpoint> endpoints, List<BlockPos> interfaces, List<BlockPos> dhcpServers) {
+    // A router reached by the search, and the router port this segment is attached to.
+    public record RouterAttachment(BlockPos routerPos, Direction port) {}
+
+    private CableNetwork(BlockPos origin, Map<BlockPos, BlockPos> parents, List<Endpoint> endpoints, List<BlockPos> interfaces,
+            List<BlockPos> dhcpServers, List<RouterAttachment> routers) {
         this.origin = origin;
         this.parents = parents;
         this.endpoints = endpoints;
         this.interfaces = interfaces;
         this.dhcpServers = dhcpServers;
+        this.routers = routers;
     }
 
     public static CableNetwork explore(ServerLevel level, BlockPos origin) {
+        return explore(level, origin, null);
+    }
+
+    // The segment on one port of a router; the router itself is the origin of every path.
+    public static CableNetwork explorePort(ServerLevel level, BlockPos routerPos, Direction port) {
+        return explore(level, routerPos, port);
+    }
+
+    private static CableNetwork explore(ServerLevel level, BlockPos origin, @Nullable Direction originPort) {
         Map<BlockPos, BlockPos> parents = new HashMap<>();
         List<Endpoint> endpoints = new ArrayList<>();
         List<BlockPos> interfaces = new ArrayList<>();
         List<BlockPos> dhcpServers = new ArrayList<>();
+        List<RouterAttachment> routers = new ArrayList<>();
         ArrayDeque<BlockPos> queue = new ArrayDeque<>();
         parents.put(origin, origin);
         queue.add(origin);
@@ -88,9 +108,18 @@ public final class CableNetwork {
                 if (isOrigin) {
                     visitAttachedCables(level, parents, queue, pos);
                 }
+            } else if (state.getBlock() instanceof RouterBlock) {
+                if (isOrigin) {
+                    if (originPort != null) {
+                        visitAttachedCable(level, parents, queue, pos, originPort);
+                    }
+                } else {
+                    BlockPos parent = parents.get(pos);
+                    routers.add(new RouterAttachment(pos.immutable(), Direction.getNearest(parent.subtract(pos), Direction.NORTH)));
+                }
             }
         }
-        return new CableNetwork(origin, parents, endpoints, interfaces, dhcpServers);
+        return new CableNetwork(origin, parents, endpoints, interfaces, dhcpServers, routers);
     }
 
     private static void visit(Map<BlockPos, BlockPos> parents, ArrayDeque<BlockPos> queue, BlockPos pos, BlockPos parent) {
@@ -102,14 +131,18 @@ public final class CableNetwork {
     // Non-cable nodes have no connection state of their own; a cable counts as attached when it connects towards them.
     private static void visitAttachedCables(ServerLevel level, Map<BlockPos, BlockPos> parents, ArrayDeque<BlockPos> queue, BlockPos pos) {
         for (Direction direction : Direction.values()) {
-            BlockPos neighbour = pos.relative(direction);
-            if (!level.isLoaded(neighbour)) {
-                continue;
-            }
-            BlockState neighbourState = level.getBlockState(neighbour);
-            if (neighbourState.getBlock() instanceof CableBlock && neighbourState.getValue(CableBlock.PROPERTY_BY_DIRECTION.get(direction.getOpposite()))) {
-                visit(parents, queue, neighbour, pos);
-            }
+            visitAttachedCable(level, parents, queue, pos, direction);
+        }
+    }
+
+    private static void visitAttachedCable(ServerLevel level, Map<BlockPos, BlockPos> parents, ArrayDeque<BlockPos> queue, BlockPos pos, Direction direction) {
+        BlockPos neighbour = pos.relative(direction);
+        if (!level.isLoaded(neighbour)) {
+            return;
+        }
+        BlockState neighbourState = level.getBlockState(neighbour);
+        if (neighbourState.getBlock() instanceof CableBlock && neighbourState.getValue(CableBlock.PROPERTY_BY_DIRECTION.get(direction.getOpposite()))) {
+            visit(parents, queue, neighbour, pos);
         }
     }
 
@@ -127,6 +160,15 @@ public final class CableNetwork {
 
     public List<BlockPos> dhcpServers() {
         return dhcpServers;
+    }
+
+    public List<RouterAttachment> routers() {
+        return routers;
+    }
+
+    // Number of links between the origin and a node in this segment.
+    public int distanceTo(BlockPos nodePos) {
+        return pathTo(nodePos).size() - 1;
     }
 
     // Node positions from the origin to the given node, both inclusive.

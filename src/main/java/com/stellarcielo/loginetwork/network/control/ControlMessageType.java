@@ -1,13 +1,17 @@
 package com.stellarcielo.loginetwork.network.control;
 
-// Control-plane messages from SPEC.md 7.1. ADVERTISE/WITHDRAW arrive with routers in phase 6.
+// Control-plane messages from SPEC.md 7.1, plus LSA for link-state routing between routers.
+// New types go at the end: ordinals are sent to clients.
 public enum ControlMessageType {
     REQUEST(0xFFD24D),
     OFFER(0x55E05A),
     RESERVE(0x4DA6FF),
     ACK(0x4DE3E3),
     NAK(0xFF4D4D),
-    RECEIVED(0xF2F2F2);
+    RECEIVED(0xF2F2F2),
+    LSA(0xB04DFF),
+    ADVERTISE(0xFF9A3D),
+    WITHDRAW(0x9A9A9A);
 
     // Colour of the light particle drawn on the client.
     private final int color;

@@ -1,8 +1,10 @@
 package com.stellarcielo.loginetwork.gametest;
 
+import java.util.List;
 import java.util.function.Consumer;
 
 import com.stellarcielo.loginetwork.LogiNetwork;
+import com.stellarcielo.loginetwork.address.Ipv4Address;
 import com.stellarcielo.loginetwork.address.Ipv4Interface;
 import com.stellarcielo.loginetwork.block.CableBlock;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
@@ -11,6 +13,7 @@ import com.stellarcielo.loginetwork.block.entity.DhcpServerBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.InterfaceStatus;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 import com.stellarcielo.loginetwork.network.NetworkManager;
+import com.stellarcielo.loginetwork.network.routing.RoutingService;
 import com.stellarcielo.loginetwork.registry.ModBlocks;
 
 import net.minecraft.core.BlockPos;
@@ -65,6 +68,11 @@ public final class ModGameTests {
     private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> TIMEOUT_REREQUESTS =
             TEST_FUNCTIONS.register("timeout_rerequests", () -> ModGameTests::timeoutRerequests);
 
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> ROUTED_DELIVERY =
+            TEST_FUNCTIONS.register("routed_delivery", () -> ModGameTests::routedDelivery);
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> DETOUR_AFTER_LINK_BREAK =
+            TEST_FUNCTIONS.register("detour_after_link_break", () -> ModGameTests::detourAfterLinkBreak);
+
     private static final Identifier STRUCTURE = Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "empty_7x3x3");
 
     // Protocol layout (7x3x5): requester chest/interface at x=0/1, cables at x=2 and x=4 with a switch at x=3,
@@ -77,6 +85,21 @@ public final class ModGameTests {
     private static final BlockPos SUPPLIER_1_CHEST = new BlockPos(6, 1, 2);
     private static final BlockPos SUPPLIER_2 = new BlockPos(2, 1, 1);
     private static final BlockPos SUPPLIER_2_CHEST = new BlockPos(2, 1, 0);
+
+    // Routed layout (9x3x5), z=3 unless noted: segment A = requester chest/interface at x=0/1 + cable x=2,
+    // router 1 at x=3, short link = cable x=4, router 2 at x=5, segment B = cable x=6 + supplier interface/chest x=7/8.
+    // Long link: router 1 north -> cables (3,1,2) (3,1,1) (4,1,1) (5,1,1) (5,1,2) -> router 2 north.
+    private static final Identifier ROUTED_STRUCTURE = Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "empty_9x3x5");
+    private static final BlockPos ROUTED_REQUESTER_CHEST = new BlockPos(0, 1, 3);
+    private static final BlockPos ROUTED_REQUESTER = new BlockPos(1, 1, 3);
+    private static final BlockPos ROUTER_1 = new BlockPos(3, 1, 3);
+    private static final BlockPos SHORT_LINK = new BlockPos(4, 1, 3);
+    private static final BlockPos ROUTER_2 = new BlockPos(5, 1, 3);
+    private static final BlockPos ROUTED_SUPPLIER = new BlockPos(7, 1, 3);
+    private static final BlockPos ROUTED_SUPPLIER_CHEST = new BlockPos(8, 1, 3);
+    private static final BlockPos LONG_LINK_MIDDLE = new BlockPos(4, 1, 1);
+    private static final Ipv4Address ROUTED_REQUESTER_ADDRESS = new Ipv4Address(0x0A000101); // 10.0.1.1
+    private static final Ipv4Address ROUTED_SUPPLIER_ADDRESS = new Ipv4Address(0x0A000201); // 10.0.2.1
 
     private static final BlockPos CHEST_A = new BlockPos(0, 1, 1);
     private static final BlockPos CHEST_B = new BlockPos(6, 1, 1);
@@ -107,6 +130,8 @@ public final class ModGameTests {
         registerTest(event, environment, REQUEST_SPLITS_BETWEEN_SUPPLIERS, 300, PROTOCOL_STRUCTURE);
         registerTest(event, environment, NO_DOUBLE_RESERVATION, 400, PROTOCOL_STRUCTURE);
         registerTest(event, environment, TIMEOUT_REREQUESTS, 800, PROTOCOL_STRUCTURE);
+        registerTest(event, environment, ROUTED_DELIVERY, 300, ROUTED_STRUCTURE);
+        registerTest(event, environment, DETOUR_AFTER_LINK_BREAK, 400, ROUTED_STRUCTURE);
     }
 
     private static void registerTest(RegisterGameTestsEvent event, Holder<TestEnvironmentDefinition<?>> environment,
@@ -277,7 +302,7 @@ public final class ModGameTests {
         keepStocked(helper, REQUESTER, Items.IRON_INGOT, 16);
         chest(helper, SUPPLIER_1_CHEST).setItem(0, new ItemStack(Items.IRON_INGOT, 32));
         chest(helper, SUPPLIER_2_CHEST).setItem(0, new ItemStack(Items.IRON_INGOT, 16));
-        BlockPos supplier1 = helper.absolutePos(SUPPLIER_1);
+        Ipv4Address supplier1 = Ipv4Address.parse("10.0.0.2").orElseThrow();
 
         helper.startSequence()
                 .thenWaitUntil(() -> helper.assertTrue(networkInterface(helper, REQUESTER).host().requests().stream()
@@ -289,6 +314,61 @@ public final class ModGameTests {
                     helper.assertValueEqual(chest(helper, SUPPLIER_1_CHEST).countItem(Items.IRON_INGOT), 32, "iron at supplier 1");
                 })
                 .thenSucceed();
+    }
+
+    // Items shipped from segment B reach segment A through both routers once link-state has converged.
+    private static void routedDelivery(GameTestHelper helper) {
+        buildRoutedNetwork(helper);
+        helper.startSequence()
+                .thenWaitUntil(() -> helper.assertTrue(routeFromSupplier(helper) != null, "waiting for routes to converge"))
+                .thenExecute(() -> shipToRequester(helper, 16))
+                .thenWaitUntil(() -> helper.assertValueEqual(chest(helper, ROUTED_REQUESTER_CHEST).countItem(Items.IRON_INGOT), 16, "iron at requester"))
+                .thenSucceed();
+    }
+
+    // The short link breaks; routers recompute and traffic takes the long link instead.
+    private static void detourAfterLinkBreak(GameTestHelper helper) {
+        buildRoutedNetwork(helper);
+        BlockPos shortLink = helper.absolutePos(SHORT_LINK);
+        BlockPos longLink = helper.absolutePos(LONG_LINK_MIDDLE);
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    List<BlockPos> route = routeFromSupplier(helper);
+                    helper.assertTrue(route != null && route.contains(shortLink), "waiting for the short link to be preferred");
+                })
+                .thenExecute(() -> helper.destroyBlock(SHORT_LINK))
+                .thenWaitUntil(() -> {
+                    List<BlockPos> route = routeFromSupplier(helper);
+                    helper.assertTrue(route != null && route.contains(longLink), "waiting for the detour over the long link");
+                })
+                .thenExecute(() -> shipToRequester(helper, 8))
+                .thenWaitUntil(() -> helper.assertValueEqual(chest(helper, ROUTED_REQUESTER_CHEST).countItem(Items.IRON_INGOT), 8, "iron at requester"))
+                .thenSucceed();
+    }
+
+    private static void buildRoutedNetwork(GameTestHelper helper) {
+        BlockState interfaceState = ModBlocks.NETWORK_INTERFACE.get().defaultBlockState();
+        helper.setBlock(ROUTED_REQUESTER_CHEST, Blocks.CHEST);
+        helper.setBlock(ROUTED_SUPPLIER_CHEST, Blocks.CHEST);
+        helper.setBlock(ROUTED_REQUESTER, interfaceState.setValue(NetworkInterfaceBlock.FACING, Direction.WEST));
+        helper.setBlock(ROUTED_SUPPLIER, interfaceState.setValue(NetworkInterfaceBlock.FACING, Direction.EAST));
+        helper.setBlock(ROUTER_1, ModBlocks.ROUTER.get());
+        helper.setBlock(ROUTER_2, ModBlocks.ROUTER.get());
+        networkInterface(helper, ROUTED_REQUESTER).configure(false, new Ipv4Interface(ROUTED_REQUESTER_ADDRESS, 24));
+        networkInterface(helper, ROUTED_SUPPLIER).configure(false, new Ipv4Interface(ROUTED_SUPPLIER_ADDRESS, 24));
+        for (BlockPos cable : List.of(new BlockPos(2, 1, 3), SHORT_LINK, new BlockPos(6, 1, 3),
+                new BlockPos(3, 1, 2), new BlockPos(3, 1, 1), LONG_LINK_MIDDLE, new BlockPos(5, 1, 1), new BlockPos(5, 1, 2))) {
+            placeCable(helper, cable);
+        }
+    }
+
+    private static List<BlockPos> routeFromSupplier(GameTestHelper helper) {
+        return RoutingService.resolve(helper.getLevel(), helper.absolutePos(ROUTED_SUPPLIER), ROUTED_REQUESTER_ADDRESS);
+    }
+
+    private static void shipToRequester(GameTestHelper helper, int count) {
+        NetworkManager.get(helper.getLevel()).ship(helper.getLevel(), helper.absolutePos(ROUTED_SUPPLIER), ROUTED_REQUESTER_ADDRESS,
+                new ItemStack(Items.IRON_INGOT, count), 1L, ROUTED_SUPPLIER_ADDRESS);
     }
 
     private static void buildProtocolLine(GameTestHelper helper, boolean withSecondSupplier) {

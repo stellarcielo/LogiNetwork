@@ -13,6 +13,7 @@ import org.jspecify.annotations.Nullable;
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import com.stellarcielo.loginetwork.Config;
+import com.stellarcielo.loginetwork.address.Ipv4Address;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 import com.stellarcielo.loginetwork.network.NetworkManager;
 import com.stellarcielo.loginetwork.network.control.ControlMessage;
@@ -47,7 +48,7 @@ public final class HostAgent {
         ).apply(instance, FilterEntry::new));
     }
 
-    private record Offer(BlockPos supplier, int available, int distance) {}
+    private record Offer(Ipv4Address supplier, int available, int distance) {}
 
     // One outstanding request: remaining = requested - received - inTransit - reserving.
     public static final class Request {
@@ -56,7 +57,7 @@ public final class HostAgent {
         final int requested;
         int received;
         int inTransit;
-        final Map<BlockPos, Integer> reserving = new HashMap<>();
+        final Map<Ipv4Address, Integer> reserving = new HashMap<>();
         final List<Offer> offers = new ArrayList<>();
         long collectDeadline = -1;
         long lastProgress;
@@ -96,7 +97,7 @@ public final class HostAgent {
             return inTransit;
         }
 
-        public boolean isReservingFrom(BlockPos supplier) {
+        public boolean isReservingFrom(Ipv4Address supplier) {
             return reserving.containsKey(supplier);
         }
     }
@@ -212,7 +213,7 @@ public final class HostAgent {
             if (deficit > 0) {
                 Request request = new Request(NetworkManager.get(level).nextRequestId(), filter.copyWithCount(1), deficit, now);
                 requests.put(request.id, request);
-                controlPlane(level).broadcast(level, ControlMessageType.REQUEST, request.id, request.item, deficit, 0, owner.mac(), owner.getBlockPos());
+                controlPlane(level).broadcast(level, content(ControlMessageType.REQUEST).request(request.id, request.item, deficit, 0));
             }
         }
     }
@@ -238,7 +239,7 @@ public final class HostAgent {
                 break;
             }
             int ask = Math.min(offer.available(), wanted);
-            if (controlPlane(level).unicast(level, ControlMessageType.RESERVE, request.id, request.item, ask, window, owner.mac(), owner.getBlockPos(), offer.supplier())) {
+            if (sendTo(level, content(ControlMessageType.RESERVE).request(request.id, request.item, ask, window), offer.supplier())) {
                 request.reserving.merge(offer.supplier(), ask, Integer::sum);
                 wanted -= ask;
             }
@@ -256,8 +257,12 @@ public final class HostAgent {
             case RESERVE -> answerReserve(level, message, now);
             case OFFER -> {
                 Request request = requests.get(message.requestId);
-                if (request != null && message.count > 0) {
-                    request.offers.add(new Offer(message.sourcePos, message.count, message.hopCount()));
+                if (request != null && message.count > 0 && message.sourceAddress != null) {
+                    // The same supplier may answer twice when several routers forward our REQUEST; keep one offer.
+                    request.offers.removeIf(offer -> offer.supplier().equals(message.sourceAddress) && offer.available() <= message.count);
+                    if (request.offers.stream().noneMatch(offer -> offer.supplier().equals(message.sourceAddress))) {
+                        request.offers.add(new Offer(message.sourceAddress, message.count, message.hopCount()));
+                    }
                     if (request.collectDeadline < 0) {
                         request.collectDeadline = now + OFFER_COLLECT_TICKS;
                     }
@@ -267,7 +272,7 @@ public final class HostAgent {
             case ACK -> {
                 Request request = requests.get(message.requestId);
                 if (request != null) {
-                    request.reserving.remove(message.sourcePos);
+                    request.reserving.remove(message.sourceAddress);
                     request.inTransit += message.count;
                     request.lastProgress = now;
                 }
@@ -275,11 +280,11 @@ public final class HostAgent {
             case NAK -> {
                 Request request = requests.get(message.requestId);
                 if (request != null) {
-                    request.reserving.remove(message.sourcePos);
+                    request.reserving.remove(message.sourceAddress);
                     request.lastProgress = now;
                     if (request.reserving.isEmpty() && request.inTransit == 0 && request.remaining() > 0) {
                         // Every reservation failed: ask the segment again for what is still missing.
-                        controlPlane(level).broadcast(level, ControlMessageType.REQUEST, request.id, request.item, request.remaining(), 0, owner.mac(), owner.getBlockPos());
+                        controlPlane(level).broadcast(level, content(ControlMessageType.REQUEST).request(request.id, request.item, request.remaining(), 0));
                     }
                 }
             }
@@ -302,30 +307,29 @@ public final class HostAgent {
         }
         int available = surplus(level, message.item);
         if (available > 0) {
-            controlPlane(level).unicast(level, ControlMessageType.OFFER, message.requestId, message.item, available, 0, owner.mac(), owner.getBlockPos(), message.sourcePos);
+            sendTo(level, content(ControlMessageType.OFFER).request(message.requestId, message.item, available, 0), message.sourceAddress);
         }
     }
 
     // ACK is the moment stock is committed (7.3): the items leave the inventory right away as packets.
     private void answerReserve(ServerLevel level, ControlMessage message, long now) {
-        ControlPlane controlPlane = controlPlane(level);
-        BlockPos requester = message.sourcePos;
+        Ipv4Address requester = message.sourceAddress;
         int amount = Math.min(Math.min(message.count, message.window), supply ? surplus(level, message.item) : 0);
         ResourceHandler<ItemResource> inventory = owner.frontInventory(level);
         NetworkManager manager = NetworkManager.get(level);
         int extracted = 0;
-        if (amount > 0 && inventory != null && manager.canShip(level, owner.getBlockPos(), requester)) {
+        if (amount > 0 && inventory != null && requester != null && manager.canShip(level, owner.getBlockPos(), requester)) {
             try (Transaction tx = Transaction.openRoot()) {
                 extracted = inventory.extract(ItemResource.of(message.item), amount, tx);
                 tx.commit();
             }
         }
         if (extracted <= 0) {
-            controlPlane.unicast(level, ControlMessageType.NAK, message.requestId, message.item, 0, 0, owner.mac(), owner.getBlockPos(), requester);
+            sendTo(level, content(ControlMessageType.NAK).request(message.requestId, message.item, 0, 0), requester);
             return;
         }
-        controlPlane.unicast(level, ControlMessageType.ACK, message.requestId, message.item, extracted, 0, owner.mac(), owner.getBlockPos(), requester);
-        manager.ship(level, owner.getBlockPos(), requester, message.item.copyWithCount(extracted), message.requestId);
+        sendTo(level, content(ControlMessageType.ACK).request(message.requestId, message.item, extracted, 0), requester);
+        manager.ship(level, owner.getBlockPos(), requester, message.item.copyWithCount(extracted), message.requestId, ownAddress());
         shipments.merge(message.requestId, new Shipment(extracted, now), (old, added) -> {
             Shipment merged = new Shipment(old.shipped + added.shipped, now);
             merged.received = old.received;
@@ -334,7 +338,7 @@ public final class HostAgent {
     }
 
     // Called by the data plane when a packet for one of our requests has been put into our inventory.
-    public void onDelivered(ServerLevel level, long requestId, ItemStack item, int count, @Nullable BlockPos supplier) {
+    public void onDelivered(ServerLevel level, long requestId, ItemStack item, int count, @Nullable Ipv4Address supplier) {
         Request request = requests.get(requestId);
         if (request == null) {
             // Not ours (a rerouted packet) or already timed out; the supplier's record expires on its own.
@@ -344,7 +348,7 @@ public final class HostAgent {
         request.inTransit = Math.max(0, request.inTransit - count);
         request.lastProgress = level.getGameTime();
         if (supplier != null) {
-            controlPlane(level).unicast(level, ControlMessageType.RECEIVED, requestId, item, count, 0, owner.mac(), owner.getBlockPos(), supplier);
+            sendTo(level, content(ControlMessageType.RECEIVED).request(requestId, item, count, 0), supplier);
         }
     }
 
@@ -385,6 +389,18 @@ public final class HostAgent {
 
     private static ControlPlane controlPlane(ServerLevel level) {
         return NetworkManager.get(level).controlPlane();
+    }
+
+    private @Nullable Ipv4Address ownAddress() {
+        return owner.assigned() == null ? null : owner.assigned().address();
+    }
+
+    private ControlMessage.Content content(ControlMessageType type) {
+        return ControlMessage.Content.of(type, owner.mac(), ownAddress(), owner.getBlockPos());
+    }
+
+    private boolean sendTo(ServerLevel level, ControlMessage.Content content, @Nullable Ipv4Address destination) {
+        return controlPlane(level).sendToAddress(level, content, owner.getBlockPos(), destination);
     }
 
     // ---- persistence ----------------------------------------------------------------------------

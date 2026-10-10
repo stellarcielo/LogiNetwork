@@ -4,6 +4,7 @@
     "loginetwork:copper_cable",
     "loginetwork:network_interface",
     "loginetwork:dhcp_server",
-    "loginetwork:access_switch"
+    "loginetwork:access_switch",
+    "loginetwork:router"
   ]
 }

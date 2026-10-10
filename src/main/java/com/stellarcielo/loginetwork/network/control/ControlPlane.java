@@ -3,24 +3,25 @@ package com.stellarcielo.loginetwork.network.control;
 import java.util.ArrayList;
 import java.util.List;
 
-import com.stellarcielo.loginetwork.address.MacAddress;
+import org.jspecify.annotations.Nullable;
+
+import com.stellarcielo.loginetwork.address.Ipv4Address;
 import com.stellarcielo.loginetwork.block.entity.AccessSwitchBlockEntity;
-import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 import com.stellarcielo.loginetwork.network.CableNetwork;
 import com.stellarcielo.loginetwork.network.NetworkManager;
 import com.stellarcielo.loginetwork.network.NetworkNodes;
 import com.stellarcielo.loginetwork.network.payload.ControlPathPayload;
+import com.stellarcielo.loginetwork.network.routing.RoutingService;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.network.PacketDistributor;
 
-// Carries control messages between interfaces with a per-hop delay. Messages are not saved:
+// Carries control messages along node paths with a per-hop delay. Messages are not saved:
 // anything in flight when the world unloads is simply lost, and the protocol's timeouts recover.
 public final class ControlPlane {
     public static final int TICKS_PER_HOP = 1;
@@ -34,29 +35,44 @@ public final class ControlPlane {
         this.manager = manager;
     }
 
-    // Segment-wide broadcast: one copy per other interface, each following the shortest path.
-    public void broadcast(ServerLevel level, ControlMessageType type, long requestId, ItemStack item, int count, int window,
-            MacAddress sourceMac, BlockPos sourcePos) {
-        CableNetwork segment = manager.network(level, sourcePos);
+    // Segment-wide broadcast from content.sourcePos: one copy per interface and router in the segment.
+    // Routers receive it but never pass it on to other segments.
+    public void broadcast(ServerLevel level, ControlMessage.Content content) {
+        BlockPos source = content.sourcePos();
+        CableNetwork segment = manager.network(level, source);
         for (BlockPos target : segment.interfaces()) {
-            if (!target.equals(sourcePos)) {
-                launch(level, new ControlMessage(type, requestId, item, count, window, sourceMac, sourcePos, segment.pathTo(target), level.getGameTime()));
+            if (!target.equals(source)) {
+                launch(level, content, segment.pathTo(target));
             }
+        }
+        for (CableNetwork.RouterAttachment router : segment.routers()) {
+            launch(level, content, segment.pathTo(router.routerPos()));
         }
     }
 
-    // Returns false when the destination is not reachable from the source.
-    public boolean unicast(ServerLevel level, ControlMessageType type, long requestId, ItemStack item, int count, int window,
-            MacAddress sourceMac, BlockPos sourcePos, BlockPos destination) {
-        CableNetwork segment = manager.network(level, sourcePos);
-        if (!segment.contains(destination) || destination.equals(sourcePos)) {
+    // Unicast to the interface holding the given address, routed through routers when needed.
+    // Returns false when there is no route.
+    public boolean sendToAddress(ServerLevel level, ControlMessage.Content content, BlockPos from, @Nullable Ipv4Address destination) {
+        if (destination == null) {
             return false;
         }
-        launch(level, new ControlMessage(type, requestId, item, count, window, sourceMac, sourcePos, segment.pathTo(destination), level.getGameTime()));
+        List<BlockPos> path = RoutingService.resolve(level, from, destination);
+        if (path == null || path.size() < 2) {
+            return false;
+        }
+        launch(level, content, path);
         return true;
     }
 
-    private void launch(ServerLevel level, ControlMessage message) {
+    // Send along a known path (used between neighbouring routers).
+    public void sendAlongPath(ServerLevel level, ControlMessage.Content content, List<BlockPos> path) {
+        if (path.size() >= 2) {
+            launch(level, content, path);
+        }
+    }
+
+    private void launch(ServerLevel level, ControlMessage.Content content, List<BlockPos> path) {
+        ControlMessage message = new ControlMessage(content, path, level.getGameTime());
         inFlight.add(message);
         syncToClients(level, message);
     }
@@ -88,8 +104,8 @@ public final class ControlPlane {
                 accessSwitch.learn(message.sourceMac, directionBetween(next, previous), now);
             }
             if (message.hop == message.hopCount()) {
-                if (level.getBlockEntity(next) instanceof NetworkInterfaceBlockEntity target) {
-                    target.host().onControlMessage(level, message);
+                if (level.getBlockEntity(next) instanceof ControlEndpoint endpoint) {
+                    endpoint.onControlMessage(level, message);
                 }
                 return true;
             }
@@ -98,8 +114,7 @@ public final class ControlPlane {
     }
 
     private static Direction directionBetween(BlockPos from, BlockPos to) {
-        BlockPos delta = to.subtract(from);
-        return Direction.getNearest(delta, Direction.NORTH);
+        return Direction.getNearest(to.subtract(from), Direction.NORTH);
     }
 
     private static void syncToClients(ServerLevel level, ControlMessage message) {

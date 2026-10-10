@@ -4,6 +4,7 @@ import com.stellarcielo.loginetwork.LogiNetwork;
 import com.stellarcielo.loginetwork.block.entity.AccessSwitchBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.DhcpServerBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
+import com.stellarcielo.loginetwork.block.entity.RouterBlockEntity;
 
 import net.minecraft.core.registries.Registries;
 import net.minecraft.world.level.block.entity.BlockEntityType;
@@ -22,6 +23,9 @@ public final class ModBlockEntities {
 
     public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<AccessSwitchBlockEntity>> ACCESS_SWITCH =
             BLOCK_ENTITY_TYPES.register("access_switch", () -> new BlockEntityType<>(AccessSwitchBlockEntity::new, ModBlocks.ACCESS_SWITCH.get()));
+
+    public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<RouterBlockEntity>> ROUTER =
+            BLOCK_ENTITY_TYPES.register("router", () -> new BlockEntityType<>(RouterBlockEntity::new, ModBlocks.ROUTER.get()));
 
     private ModBlockEntities() {}
 

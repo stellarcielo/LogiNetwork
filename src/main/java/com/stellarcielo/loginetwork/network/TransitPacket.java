@@ -7,6 +7,7 @@ import org.jspecify.annotations.Nullable;
 
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
+import com.stellarcielo.loginetwork.address.Ipv4Address;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
@@ -30,9 +31,11 @@ public final class TransitPacket {
             Codec.BOOL.fieldOf("returning").forGetter(p -> p.returning),
             Codec.INT.fieldOf("reroutes").forGetter(p -> p.reroutes),
             Codec.LONG.optionalFieldOf("request_id", NO_REQUEST).forGetter(p -> p.requestId),
-            BlockPos.CODEC.optionalFieldOf("reply_to").forGetter(p -> Optional.ofNullable(p.replyTo))
-    ).apply(instance, (id, stack, nodes, startsAtInventory, hop, hopStart, hopDuration, source, returning, reroutes, requestId, replyTo) ->
-            new TransitPacket(id, stack, nodes, startsAtInventory, hop, hopStart, hopDuration, source, returning, reroutes, requestId, replyTo.orElse(null))));
+            Ipv4Address.CODEC.optionalFieldOf("reply_address").forGetter(p -> Optional.ofNullable(p.replyAddress)),
+            Ipv4Address.CODEC.optionalFieldOf("destination_address").forGetter(p -> Optional.ofNullable(p.destinationAddress))
+    ).apply(instance, (id, stack, nodes, startsAtInventory, hop, hopStart, hopDuration, source, returning, reroutes, requestId, replyAddress,
+            destinationAddress) -> new TransitPacket(id, stack, nodes, startsAtInventory, hop, hopStart, hopDuration, source, returning, reroutes,
+            requestId, replyAddress.orElse(null), destinationAddress.orElse(null))));
 
     final long id;
     ItemStack stack;
@@ -44,12 +47,15 @@ public final class TransitPacket {
     final BlockPos source;
     boolean returning;
     int reroutes;
-    // Set for deliveries made under the request protocol; replyTo is the supplying interface.
+    // Set for deliveries made under the request protocol: the supplier's address (for RECEIVED and returns)
+    // and the requester's address (for finding a new way after a link breaks).
     final long requestId;
-    final @Nullable BlockPos replyTo;
+    final @Nullable Ipv4Address replyAddress;
+    final @Nullable Ipv4Address destinationAddress;
 
     TransitPacket(long id, ItemStack stack, List<BlockPos> nodes, boolean startsAtInventory, int hop, long hopStart,
-            int hopDuration, BlockPos source, boolean returning, int reroutes, long requestId, @Nullable BlockPos replyTo) {
+            int hopDuration, BlockPos source, boolean returning, int reroutes, long requestId, @Nullable Ipv4Address replyAddress,
+            @Nullable Ipv4Address destinationAddress) {
         this.id = id;
         this.stack = stack;
         this.nodes = List.copyOf(nodes);
@@ -61,7 +67,8 @@ public final class TransitPacket {
         this.returning = returning;
         this.reroutes = reroutes;
         this.requestId = requestId;
-        this.replyTo = replyTo;
+        this.replyAddress = replyAddress;
+        this.destinationAddress = destinationAddress;
     }
 
     public long requestId() {

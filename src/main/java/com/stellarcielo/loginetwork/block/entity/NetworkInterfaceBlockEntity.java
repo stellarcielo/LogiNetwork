@@ -11,6 +11,8 @@ import com.stellarcielo.loginetwork.address.MacAddress;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
 import com.stellarcielo.loginetwork.network.CableNetwork;
 import com.stellarcielo.loginetwork.network.NetworkManager;
+import com.stellarcielo.loginetwork.network.control.ControlEndpoint;
+import com.stellarcielo.loginetwork.network.control.ControlMessage;
 import com.stellarcielo.loginetwork.network.host.HostAgent;
 import com.stellarcielo.loginetwork.network.payload.OpenInterfaceScreenPayload;
 import com.stellarcielo.loginetwork.registry.ModBlockEntities;
@@ -32,7 +34,7 @@ import net.neoforged.neoforge.transfer.item.ItemResource;
 
 // Host identity: MAC, address configuration and the address currently in use.
 // Every CHECK_INTERVAL ticks it renews its DHCP lease (or runs DISCOVER/OFFER/REQUEST/ACK) and checks for conflicts.
-public class NetworkInterfaceBlockEntity extends BlockEntity {
+public class NetworkInterfaceBlockEntity extends BlockEntity implements ControlEndpoint {
     private static final int CHECK_INTERVAL = 40;
 
     private MacAddress mac;
@@ -52,6 +54,11 @@ public class NetworkInterfaceBlockEntity extends BlockEntity {
 
     public HostAgent host() {
         return host;
+    }
+
+    @Override
+    public void onControlMessage(ServerLevel level, ControlMessage message) {
+        host.onControlMessage(level, message);
     }
 
     // Hosts take part in the request protocol only with a working address.
