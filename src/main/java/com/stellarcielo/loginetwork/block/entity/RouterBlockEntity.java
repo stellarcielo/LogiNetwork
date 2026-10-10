@@ -1,6 +1,7 @@
 package com.stellarcielo.loginetwork.block.entity;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -28,6 +29,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.RandomSource;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
@@ -42,6 +44,23 @@ public class RouterBlockEntity extends BlockEntity implements ControlEndpoint {
     // Re-flood our LSA this often even without changes, and forget others not refreshed for three times as long.
     private static final long LSA_REFRESH_TICKS = 600;
     private static final long LSA_MAX_AGE_TICKS = 3 * LSA_REFRESH_TICKS;
+    // Hosts re-advertise their full list every 600 ticks; items not heard of for three times that are forgotten.
+    private static final long ADVERTISEMENT_MAX_AGE_TICKS = 1800;
+    // A REQUEST is forwarded to at most this many remote suppliers, cheapest first.
+    private static final int MAX_FORWARDED_REQUESTS = 3;
+
+    private static final class AdvertisedItem {
+        final ItemStack item;
+        long lastHeard;
+
+        AdvertisedItem(ItemStack item, long lastHeard) {
+            this.item = item;
+            this.lastHeard = lastHeard;
+        }
+    }
+
+    // One supplier in the inventory table.
+    public record Supplier(Ipv4Address host, int cost) {}
 
     private record NeighbourInfo(BlockPos pos, Direction port) {}
 
@@ -57,6 +76,8 @@ public class RouterBlockEntity extends BlockEntity implements ControlEndpoint {
     private Map<MacAddress, ShortestPaths.Path> paths = Map.of();
     private boolean routesDirty = true;
     private int refreshCooldown;
+    // Items advertised by hosts in our own segments, keyed by host address.
+    private final Map<Ipv4Address, List<AdvertisedItem>> hostItems = new HashMap<>();
 
     public RouterBlockEntity(BlockPos pos, BlockState state) {
         super(ModBlockEntities.ROUTER.get(), pos, state);
@@ -148,7 +169,24 @@ public class RouterBlockEntity extends BlockEntity implements ControlEndpoint {
         }
         List<Lsa.PortAddress> addresses = new ArrayList<>();
         portAddresses.forEach((port, address) -> addresses.add(new Lsa.PortAddress(port, address)));
-        return new Lsa(routerId, 0L, worldPosition, links, hosts, addresses, List.of());
+        return new Lsa(routerId, 0L, worldPosition, links, hosts, addresses, attachedHostItems(hosts, level.getGameTime()));
+    }
+
+    // Advertised items of hosts that are still attached, dropping hosts that left and items that went stale.
+    private List<Lsa.HostItems> attachedHostItems(List<Lsa.HostRoute> hosts, long now) {
+        hostItems.keySet().removeIf(address -> hosts.stream().noneMatch(host -> host.address().equals(address)));
+        List<Lsa.HostItems> result = new ArrayList<>();
+        for (Lsa.HostRoute host : hosts) {
+            List<AdvertisedItem> items = hostItems.get(host.address());
+            if (items == null) {
+                continue;
+            }
+            items.removeIf(item -> now - item.lastHeard > ADVERTISEMENT_MAX_AGE_TICKS);
+            if (!items.isEmpty()) {
+                result.add(new Lsa.HostItems(host.address(), items.stream().map(item -> item.item).toList()));
+            }
+        }
+        return result;
     }
 
     private void flood(ServerLevel level, Lsa lsa, @Nullable BlockPos except) {
@@ -170,9 +208,89 @@ public class RouterBlockEntity extends BlockEntity implements ControlEndpoint {
 
     @Override
     public void onControlMessage(ServerLevel level, ControlMessage message) {
-        if (message.type == ControlMessageType.LSA && message.body() instanceof Lsa lsa) {
-            receiveLsa(level, lsa, message.sourcePos);
+        switch (message.type) {
+            case LSA -> {
+                if (message.body() instanceof Lsa lsa) {
+                    receiveLsa(level, lsa, message.sourcePos);
+                }
+            }
+            case ADVERTISE -> updateHostItems(message, level.getGameTime(), true);
+            case WITHDRAW -> updateHostItems(message, level.getGameTime(), false);
+            case REQUEST -> forwardRequest(level, message);
+            default -> {
+            }
         }
+    }
+
+    private void updateHostItems(ControlMessage message, long now, boolean available) {
+        if (message.sourceAddress == null || !(message.body() instanceof List<?> items)) {
+            return;
+        }
+        List<AdvertisedItem> known = hostItems.computeIfAbsent(message.sourceAddress, address -> new ArrayList<>());
+        for (Object object : items) {
+            if (!(object instanceof ItemStack item)) {
+                continue;
+            }
+            AdvertisedItem existing = known.stream().filter(entry -> ItemStack.isSameItemSameComponents(entry.item, item)).findFirst().orElse(null);
+            if (!available) {
+                known.remove(existing);
+            } else if (existing != null) {
+                existing.lastHeard = now;
+            } else {
+                known.add(new AdvertisedItem(item.copyWithCount(1), now));
+            }
+        }
+        // The next refresh puts the change into our LSA.
+        refreshCooldown = 0;
+    }
+
+    // A REQUEST broadcast in one of our segments: pass it on to suppliers elsewhere that advertise the item.
+    // The original requester stays the source, so offers go straight back to it.
+    private void forwardRequest(ServerLevel level, ControlMessage message) {
+        if (message.sourceAddress == null) {
+            return;
+        }
+        Direction incoming = Direction.getNearest(message.previousHop().subtract(worldPosition), Direction.NORTH);
+        int sent = 0;
+        for (Supplier supplier : suppliersOf(message.item)) {
+            if (sent >= MAX_FORWARDED_REQUESTS) {
+                break;
+            }
+            if (supplier.host().equals(message.sourceAddress) || isAttachedVia(supplier.host(), incoming)) {
+                // Hosts in the requester's own segment already heard the broadcast.
+                continue;
+            }
+            if (NetworkManager.get(level).controlPlane().sendToAddress(level, message.content, worldPosition, supplier.host())) {
+                sent++;
+            }
+        }
+    }
+
+    private boolean isAttachedVia(Ipv4Address host, Direction port) {
+        return self != null && self.hosts().stream().anyMatch(route -> route.address().equals(host) && route.port() == port);
+    }
+
+    // Inventory table: hosts advertising an item anywhere we can reach, cheapest first.
+    public List<Supplier> suppliersOf(ItemStack item) {
+        ensureRoutes();
+        List<Supplier> suppliers = new ArrayList<>();
+        for (Lsa lsa : database.values()) {
+            int cost;
+            if (lsa.routerId().equals(routerId)) {
+                cost = 0;
+            } else if (paths.containsKey(lsa.routerId())) {
+                cost = paths.get(lsa.routerId()).cost();
+            } else {
+                continue;
+            }
+            for (Lsa.HostItems hostItems : lsa.items()) {
+                if (hostItems.items().stream().anyMatch(candidate -> ItemStack.isSameItemSameComponents(candidate, item))) {
+                    suppliers.add(new Supplier(hostItems.host(), cost));
+                }
+            }
+        }
+        suppliers.sort(Comparator.comparingInt(Supplier::cost));
+        return suppliers;
     }
 
     private void receiveLsa(ServerLevel level, Lsa lsa, BlockPos from) {

@@ -2,11 +2,13 @@ package com.stellarcielo.loginetwork.network.host;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.jspecify.annotations.Nullable;
 
@@ -15,6 +17,7 @@ import com.mojang.serialization.codecs.RecordCodecBuilder;
 import com.stellarcielo.loginetwork.Config;
 import com.stellarcielo.loginetwork.address.Ipv4Address;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
+import com.stellarcielo.loginetwork.network.CableNetwork;
 import com.stellarcielo.loginetwork.network.NetworkManager;
 import com.stellarcielo.loginetwork.network.control.ControlMessage;
 import com.stellarcielo.loginetwork.network.control.ControlMessageType;
@@ -39,6 +42,7 @@ public final class HostAgent {
     public static final int MAX_TARGET = 9999;
     private static final int STOCK_CHECK_INTERVAL = 40;
     private static final int OFFER_COLLECT_TICKS = 10;
+    private static final long ADVERTISE_REFRESH_TICKS = 600;
 
     private record FilterEntry(int slot, ItemStack item, int target) {
         static final Codec<FilterEntry> CODEC = RecordCodecBuilder.create(instance -> instance.group(
@@ -121,6 +125,10 @@ public final class HostAgent {
     private final Map<Long, Request> requests = new LinkedHashMap<>();
     private final Map<Long, Shipment> shipments = new HashMap<>();
     private int stockCooldown;
+    // Item types last advertised to the routers of our segment, and which routers have heard the full list.
+    private List<ItemStack> advertised = List.of();
+    private Set<BlockPos> advertisedTo = Set.of();
+    private long lastFullAdvertise;
 
     public HostAgent(NetworkInterfaceBlockEntity owner) {
         this.owner = owner;
@@ -192,6 +200,7 @@ public final class HostAgent {
 
         if (stockCooldown-- <= 0) {
             stockCooldown = STOCK_CHECK_INTERVAL;
+            advertise(level, now);
             checkStock(level, now);
         }
     }
@@ -216,6 +225,62 @@ public final class HostAgent {
                 controlPlane(level).broadcast(level, content(ControlMessageType.REQUEST).request(request.id, request.item, deficit, 0));
             }
         }
+    }
+
+    // ADVERTISE newly available item types and WITHDRAW sold-out ones to every router in our segment.
+    // Routers that are new to us, and all routers every ADVERTISE_REFRESH_TICKS, get the full list.
+    private void advertise(ServerLevel level, long now) {
+        List<ItemStack> current = supply && owner.hasUsableAddress() ? surplusTypes(level) : List.of();
+        List<ItemStack> added = minus(current, advertised);
+        List<ItemStack> removed = minus(advertised, current);
+        boolean refresh = now - lastFullAdvertise >= ADVERTISE_REFRESH_TICKS;
+        CableNetwork segment = NetworkManager.get(level).network(level, owner.getBlockPos());
+        Set<BlockPos> routers = new HashSet<>();
+        for (CableNetwork.RouterAttachment router : segment.routers()) {
+            BlockPos routerPos = router.routerPos();
+            routers.add(routerPos);
+            List<ItemStack> toAdvertise = refresh || !advertisedTo.contains(routerPos) ? current : added;
+            if (!toAdvertise.isEmpty()) {
+                controlPlane(level).sendAlongPath(level, content(ControlMessageType.ADVERTISE).withBody(List.copyOf(toAdvertise)), segment.pathTo(routerPos));
+            }
+            if (!removed.isEmpty() && advertisedTo.contains(routerPos)) {
+                controlPlane(level).sendAlongPath(level, content(ControlMessageType.WITHDRAW).withBody(List.copyOf(removed)), segment.pathTo(routerPos));
+            }
+        }
+        if (refresh) {
+            lastFullAdvertise = now;
+        }
+        advertised = current;
+        advertisedTo = routers;
+    }
+
+    private List<ItemStack> surplusTypes(ServerLevel level) {
+        ResourceHandler<ItemResource> inventory = owner.frontInventory(level);
+        List<ItemStack> types = new ArrayList<>();
+        if (inventory == null) {
+            return types;
+        }
+        for (int slot = 0; slot < inventory.size(); slot++) {
+            ItemResource resource = inventory.getResource(slot);
+            if (resource.isEmpty()) {
+                continue;
+            }
+            ItemStack type = resource.toStack(1);
+            if (types.stream().noneMatch(known -> ItemStack.isSameItemSameComponents(known, type)) && surplus(level, type) > 0) {
+                types.add(type);
+            }
+        }
+        return types;
+    }
+
+    private static List<ItemStack> minus(List<ItemStack> from, List<ItemStack> remove) {
+        List<ItemStack> result = new ArrayList<>();
+        for (ItemStack item : from) {
+            if (remove.stream().noneMatch(other -> ItemStack.isSameItemSameComponents(other, item))) {
+                result.add(item);
+            }
+        }
+        return result;
     }
 
     private boolean hasRequestFor(ItemStack item) {

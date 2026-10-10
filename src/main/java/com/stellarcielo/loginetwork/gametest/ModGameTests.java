@@ -12,6 +12,7 @@ import com.stellarcielo.loginetwork.block.entity.AccessSwitchBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.DhcpServerBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.InterfaceStatus;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
+import com.stellarcielo.loginetwork.block.entity.RouterBlockEntity;
 import com.stellarcielo.loginetwork.network.NetworkManager;
 import com.stellarcielo.loginetwork.network.routing.RoutingService;
 import com.stellarcielo.loginetwork.registry.ModBlocks;
@@ -73,6 +74,11 @@ public final class ModGameTests {
     private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> DETOUR_AFTER_LINK_BREAK =
             TEST_FUNCTIONS.register("detour_after_link_break", () -> ModGameTests::detourAfterLinkBreak);
 
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> CROSS_SEGMENT_REQUEST =
+            TEST_FUNCTIONS.register("cross_segment_request", () -> ModGameTests::crossSegmentRequest);
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> WITHDRAW_WHEN_SOLD_OUT =
+            TEST_FUNCTIONS.register("withdraw_when_sold_out", () -> ModGameTests::withdrawWhenSoldOut);
+
     private static final Identifier STRUCTURE = Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "empty_7x3x3");
 
     // Protocol layout (7x3x5): requester chest/interface at x=0/1, cables at x=2 and x=4 with a switch at x=3,
@@ -132,6 +138,8 @@ public final class ModGameTests {
         registerTest(event, environment, TIMEOUT_REREQUESTS, 800, PROTOCOL_STRUCTURE);
         registerTest(event, environment, ROUTED_DELIVERY, 300, ROUTED_STRUCTURE);
         registerTest(event, environment, DETOUR_AFTER_LINK_BREAK, 400, ROUTED_STRUCTURE);
+        registerTest(event, environment, CROSS_SEGMENT_REQUEST, 600, ROUTED_STRUCTURE);
+        registerTest(event, environment, WITHDRAW_WHEN_SOLD_OUT, 600, ROUTED_STRUCTURE);
     }
 
     private static void registerTest(RegisterGameTestsEvent event, Holder<TestEnvironmentDefinition<?>> environment,
@@ -344,6 +352,34 @@ public final class ModGameTests {
                 .thenExecute(() -> shipToRequester(helper, 8))
                 .thenWaitUntil(() -> helper.assertValueEqual(chest(helper, ROUTED_REQUESTER_CHEST).countItem(Items.IRON_INGOT), 8, "iron at requester"))
                 .thenSucceed();
+    }
+
+    // The supplier is behind two routers: its ADVERTISE reaches router 1, which forwards the REQUEST to it.
+    private static void crossSegmentRequest(GameTestHelper helper) {
+        buildRoutedNetwork(helper);
+        chest(helper, ROUTED_SUPPLIER_CHEST).setItem(0, new ItemStack(Items.IRON_INGOT, 64));
+        keepStocked(helper, ROUTED_REQUESTER, Items.IRON_INGOT, 16);
+        helper.succeedWhen(() -> {
+            helper.assertValueEqual(chest(helper, ROUTED_REQUESTER_CHEST).countItem(Items.IRON_INGOT), 16, "iron at requester");
+            helper.assertValueEqual(chest(helper, ROUTED_SUPPLIER_CHEST).countItem(Items.IRON_INGOT), 48, "iron at supplier");
+            helper.assertTrue(networkInterface(helper, ROUTED_REQUESTER).host().requests().isEmpty(), "request should be complete");
+        });
+    }
+
+    // Router 1 learns about the supplier's iron, then forgets it once the supplier runs out.
+    private static void withdrawWhenSoldOut(GameTestHelper helper) {
+        buildRoutedNetwork(helper);
+        chest(helper, ROUTED_SUPPLIER_CHEST).setItem(0, new ItemStack(Items.IRON_INGOT, 8));
+        helper.startSequence()
+                .thenWaitUntil(() -> helper.assertTrue(router1Knows(helper, Items.IRON_INGOT), "waiting for iron to be advertised"))
+                .thenExecute(() -> chest(helper, ROUTED_SUPPLIER_CHEST).setItem(0, ItemStack.EMPTY))
+                .thenWaitUntil(() -> helper.assertTrue(!router1Knows(helper, Items.IRON_INGOT), "waiting for iron to be withdrawn"))
+                .thenSucceed();
+    }
+
+    private static boolean router1Knows(GameTestHelper helper, Item item) {
+        return helper.getBlockEntity(ROUTER_1, RouterBlockEntity.class).suppliersOf(new ItemStack(item)).stream()
+                .anyMatch(supplier -> supplier.host().equals(ROUTED_SUPPLIER_ADDRESS));
     }
 
     private static void buildRoutedNetwork(GameTestHelper helper) {
