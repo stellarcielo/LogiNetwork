@@ -3,5 +3,10 @@
   "block.loginetwork.copper_cable": "Copper Cable",
   "loginetwork.configuration.title": "LogiNetwork Configs",
   "loginetwork.configuration.section.loginetwork.common.toml": "LogiNetwork Configs",
-  "loginetwork.configuration.section.loginetwork.common.toml.title": "LogiNetwork Configs"
+  "loginetwork.configuration.section.loginetwork.common.toml.title": "LogiNetwork Configs",
+  "message.loginetwork.cable.extract_on": "Extract mode: ON",
+  "message.loginetwork.cable.extract_off": "Extract mode: OFF",
+  "loginetwork.configuration.itemRenderDistance": "Item Render Distance",
+  "loginetwork.configuration.section.loginetwork.client.toml": "LogiNetwork Client Configs",
+  "loginetwork.configuration.section.loginetwork.client.toml.title": "LogiNetwork Client Configs"
 }

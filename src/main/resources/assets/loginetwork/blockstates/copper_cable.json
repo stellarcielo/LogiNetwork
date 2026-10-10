@@ -7,7 +7,8 @@
     },
     {
       "when": {
-        "north": "true"
+        "north": "true",
+        "extract_north": "false"
       },
       "apply": {
         "model": "loginetwork:block/copper_cable_side"
@@ -15,7 +16,16 @@
     },
     {
       "when": {
-        "east": "true"
+        "extract_north": "true"
+      },
+      "apply": {
+        "model": "loginetwork:block/copper_cable_extract"
+      }
+    },
+    {
+      "when": {
+        "east": "true",
+        "extract_east": "false"
       },
       "apply": {
         "model": "loginetwork:block/copper_cable_side",
@@ -24,7 +34,17 @@
     },
     {
       "when": {
-        "south": "true"
+        "extract_east": "true"
+      },
+      "apply": {
+        "model": "loginetwork:block/copper_cable_extract",
+        "y": 90
+      }
+    },
+    {
+      "when": {
+        "south": "true",
+        "extract_south": "false"
       },
       "apply": {
         "model": "loginetwork:block/copper_cable_side",
@@ -33,7 +53,17 @@
     },
     {
       "when": {
-        "west": "true"
+        "extract_south": "true"
+      },
+      "apply": {
+        "model": "loginetwork:block/copper_cable_extract",
+        "y": 180
+      }
+    },
+    {
+      "when": {
+        "west": "true",
+        "extract_west": "false"
       },
       "apply": {
         "model": "loginetwork:block/copper_cable_side",
@@ -42,7 +72,17 @@
     },
     {
       "when": {
-        "up": "true"
+        "extract_west": "true"
+      },
+      "apply": {
+        "model": "loginetwork:block/copper_cable_extract",
+        "y": 270
+      }
+    },
+    {
+      "when": {
+        "up": "true",
+        "extract_up": "false"
       },
       "apply": {
         "model": "loginetwork:block/copper_cable_side",
@@ -51,10 +91,29 @@
     },
     {
       "when": {
-        "down": "true"
+        "extract_up": "true"
+      },
+      "apply": {
+        "model": "loginetwork:block/copper_cable_extract",
+        "x": 270
+      }
+    },
+    {
+      "when": {
+        "down": "true",
+        "extract_down": "false"
       },
       "apply": {
         "model": "loginetwork:block/copper_cable_side",
+        "x": 90
+      }
+    },
+    {
+      "when": {
+        "extract_down": "true"
+      },
+      "apply": {
+        "model": "loginetwork:block/copper_cable_extract",
         "x": 90
       }
     }

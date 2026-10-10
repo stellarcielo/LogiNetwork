@@ -3,6 +3,8 @@ package com.stellarcielo.loginetwork;
 import org.slf4j.Logger;
 
 import com.mojang.logging.LogUtils;
+import com.stellarcielo.loginetwork.gametest.ModGameTests;
+import com.stellarcielo.loginetwork.network.payload.ModPayloads;
 import com.stellarcielo.loginetwork.registry.ModBlocks;
 import com.stellarcielo.loginetwork.registry.ModCreativeTabs;
 import com.stellarcielo.loginetwork.registry.ModItems;
@@ -21,7 +23,10 @@ public class LogiNetwork {
         ModBlocks.register(modEventBus);
         ModItems.register(modEventBus);
         ModCreativeTabs.register(modEventBus);
+        modEventBus.addListener(ModPayloads::register);
+        ModGameTests.register(modEventBus);
 
-        modContainer.registerConfig(ModConfig.Type.COMMON, Config.SPEC);
+        modContainer.registerConfig(ModConfig.Type.COMMON, Config.COMMON_SPEC);
+        modContainer.registerConfig(ModConfig.Type.CLIENT, Config.CLIENT_SPEC);
     }
 }
