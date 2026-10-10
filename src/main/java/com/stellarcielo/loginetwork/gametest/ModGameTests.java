@@ -79,6 +79,11 @@ public final class ModGameTests {
     private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> WITHDRAW_WHEN_SOLD_OUT =
             TEST_FUNCTIONS.register("withdraw_when_sold_out", () -> ModGameTests::withdrawWhenSoldOut);
 
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> STATIC_ROUTE_PREFERRED =
+            TEST_FUNCTIONS.register("static_route_preferred", () -> ModGameTests::staticRoutePreferred);
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> DHCP_POOLS_DO_NOT_OVERLAP =
+            TEST_FUNCTIONS.register("dhcp_pools_do_not_overlap", () -> ModGameTests::dhcpPoolsDoNotOverlap);
+
     private static final Identifier STRUCTURE = Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "empty_7x3x3");
 
     // Protocol layout (7x3x5): requester chest/interface at x=0/1, cables at x=2 and x=4 with a switch at x=3,
@@ -140,6 +145,8 @@ public final class ModGameTests {
         registerTest(event, environment, DETOUR_AFTER_LINK_BREAK, 400, ROUTED_STRUCTURE);
         registerTest(event, environment, CROSS_SEGMENT_REQUEST, 600, ROUTED_STRUCTURE);
         registerTest(event, environment, WITHDRAW_WHEN_SOLD_OUT, 600, ROUTED_STRUCTURE);
+        registerTest(event, environment, STATIC_ROUTE_PREFERRED, 400, ROUTED_STRUCTURE);
+        registerTest(event, environment, DHCP_POOLS_DO_NOT_OVERLAP, 20);
     }
 
     private static void registerTest(RegisterGameTestsEvent event, Holder<TestEnvironmentDefinition<?>> environment,
@@ -375,6 +382,33 @@ public final class ModGameTests {
                 .thenExecute(() -> chest(helper, ROUTED_SUPPLIER_CHEST).setItem(0, ItemStack.EMPTY))
                 .thenWaitUntil(() -> helper.assertTrue(!router1Knows(helper, Items.IRON_INGOT), "waiting for iron to be withdrawn"))
                 .thenSucceed();
+    }
+
+    // Learned routing prefers the short link; a static route on router 2 pins traffic to the long one.
+    private static void staticRoutePreferred(GameTestHelper helper) {
+        buildRoutedNetwork(helper);
+        BlockPos longLink = helper.absolutePos(LONG_LINK_MIDDLE);
+        helper.getBlockEntity(ROUTER_1, RouterBlockEntity.class).setPortAddress(Direction.NORTH, Ipv4Interface.parse("10.0.9.1/24").orElseThrow());
+        helper.getBlockEntity(ROUTER_2, RouterBlockEntity.class).addStaticRoute(RouterBlockEntity.StaticRoute.parse("10.0.1.0/24 via 10.0.9.1").orElseThrow());
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    List<BlockPos> route = routeFromSupplier(helper);
+                    helper.assertTrue(route != null && route.contains(longLink), "waiting for the static route over the long link");
+                })
+                .thenExecute(() -> shipToRequester(helper, 8))
+                .thenWaitUntil(() -> helper.assertValueEqual(chest(helper, ROUTED_REQUESTER_CHEST).countItem(Items.IRON_INGOT), 8, "iron at requester"))
+                .thenSucceed();
+    }
+
+    // Two freshly placed DHCP servers get different default pools.
+    private static void dhcpPoolsDoNotOverlap(GameTestHelper helper) {
+        helper.setBlock(new BlockPos(1, 1, 1), ModBlocks.DHCP_SERVER.get());
+        helper.setBlock(new BlockPos(5, 1, 1), ModBlocks.DHCP_SERVER.get());
+        helper.succeedWhen(() -> {
+            Ipv4Address first = helper.getBlockEntity(new BlockPos(1, 1, 1), DhcpServerBlockEntity.class).rangeStart();
+            Ipv4Address second = helper.getBlockEntity(new BlockPos(5, 1, 1), DhcpServerBlockEntity.class).rangeStart();
+            helper.assertTrue(!first.inSubnet(second, 24), "pools should be in different /24 subnets: " + first + " and " + second);
+        });
     }
 
     private static boolean router1Knows(GameTestHelper helper, Item item) {

@@ -9,9 +9,11 @@ import com.stellarcielo.loginetwork.address.Ipv4Interface;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
 import com.stellarcielo.loginetwork.block.entity.DhcpServerBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
+import com.stellarcielo.loginetwork.block.entity.RouterBlockEntity;
 import com.stellarcielo.loginetwork.menu.StockKeeperMenu;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -76,6 +78,46 @@ public final class ServerPayloadHandlers {
             player.openMenu(new SimpleMenuProvider((containerId, inventory, p) -> new StockKeeperMenu(containerId, inventory, blockEntity),
                     Component.translatable("gui.loginetwork.stock_keeper.title")), payload.pos());
         }
+    }
+
+    public static void configureRouter(ConfigureRouterPayload payload, IPayloadContext context) {
+        if (!(context.player() instanceof ServerPlayer player)
+                || !(reachableBlockEntity(player, payload.pos()) instanceof RouterBlockEntity router)) {
+            return;
+        }
+        switch (payload.action()) {
+            case ConfigureRouterPayload.SET_PORT -> {
+                if (payload.index() < 0 || payload.index() >= Direction.values().length) {
+                    return;
+                }
+                Ipv4Interface address = null;
+                if (!payload.text().isBlank()) {
+                    Optional<Ipv4Interface> parsed = Ipv4Interface.parse(payload.text());
+                    if (parsed.isEmpty()) {
+                        player.sendOverlayMessage(Component.translatable("message.loginetwork.invalid_address", payload.text()));
+                        return;
+                    }
+                    address = parsed.get();
+                }
+                router.setPortAddress(Direction.from3DDataValue(payload.index()), address);
+            }
+            case ConfigureRouterPayload.ADD_STATIC -> {
+                Optional<RouterBlockEntity.StaticRoute> route = RouterBlockEntity.StaticRoute.parse(payload.text());
+                if (route.isEmpty()) {
+                    player.sendOverlayMessage(Component.translatable("message.loginetwork.invalid_static_route", payload.text()));
+                    return;
+                }
+                if (!router.addStaticRoute(route.get())) {
+                    player.sendOverlayMessage(Component.translatable("message.loginetwork.too_many_static_routes", RouterBlockEntity.MAX_STATIC_ROUTES));
+                    return;
+                }
+            }
+            case ConfigureRouterPayload.REMOVE_STATIC -> router.removeStaticRoute(payload.index());
+            default -> {
+                return;
+            }
+        }
+        router.openScreen(player);
     }
 
     private static @Nullable BlockEntity reachableBlockEntity(ServerPlayer player, BlockPos pos) {

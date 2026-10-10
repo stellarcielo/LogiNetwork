@@ -6,10 +6,12 @@ import com.stellarcielo.loginetwork.client.TransitItemRenderer;
 import com.stellarcielo.loginetwork.client.screen.AccessSwitchScreen;
 import com.stellarcielo.loginetwork.client.screen.DhcpServerScreen;
 import com.stellarcielo.loginetwork.client.screen.NetworkInterfaceScreen;
+import com.stellarcielo.loginetwork.client.screen.RouterScreen;
 import com.stellarcielo.loginetwork.client.screen.StockKeeperScreen;
 import com.stellarcielo.loginetwork.network.payload.ControlPathPayload;
 import com.stellarcielo.loginetwork.network.payload.OpenDhcpScreenPayload;
 import com.stellarcielo.loginetwork.network.payload.OpenInterfaceScreenPayload;
+import com.stellarcielo.loginetwork.network.payload.OpenRouterScreenPayload;
 import com.stellarcielo.loginetwork.network.payload.OpenSwitchScreenPayload;
 import com.stellarcielo.loginetwork.registry.ModMenus;
 import com.stellarcielo.loginetwork.network.payload.TransitHopPayload;
@@ -50,6 +52,7 @@ public class LogiNetworkClient {
         event.register(OpenDhcpScreenPayload.TYPE, (payload, context) -> Minecraft.getInstance().gui.setScreen(new DhcpServerScreen(payload)));
         event.register(OpenSwitchScreenPayload.TYPE, (payload, context) -> Minecraft.getInstance().gui.setScreen(new AccessSwitchScreen(payload)));
         event.register(ControlPathPayload.TYPE, (payload, context) -> ClientControlTracker.onPath(payload));
+        event.register(OpenRouterScreenPayload.TYPE, (payload, context) -> Minecraft.getInstance().gui.setScreen(new RouterScreen(payload)));
     }
 
     private static void registerMenuScreens(RegisterMenuScreensEvent event) {

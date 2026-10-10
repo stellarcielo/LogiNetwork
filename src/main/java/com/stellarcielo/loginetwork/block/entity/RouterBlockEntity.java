@@ -7,10 +7,13 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import org.jspecify.annotations.Nullable;
 
+import com.mojang.serialization.Codec;
+import com.mojang.serialization.codecs.RecordCodecBuilder;
 import com.stellarcielo.loginetwork.address.Ipv4Address;
 import com.stellarcielo.loginetwork.address.Ipv4Interface;
 import com.stellarcielo.loginetwork.address.MacAddress;
@@ -19,6 +22,7 @@ import com.stellarcielo.loginetwork.network.NetworkManager;
 import com.stellarcielo.loginetwork.network.control.ControlEndpoint;
 import com.stellarcielo.loginetwork.network.control.ControlMessage;
 import com.stellarcielo.loginetwork.network.control.ControlMessageType;
+import com.stellarcielo.loginetwork.network.payload.OpenRouterScreenPayload;
 import com.stellarcielo.loginetwork.network.routing.Lsa;
 import com.stellarcielo.loginetwork.network.routing.RouteDecision;
 import com.stellarcielo.loginetwork.network.routing.ShortestPaths;
@@ -35,6 +39,7 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.storage.ValueInput;
 import net.minecraft.world.level.storage.ValueOutput;
+import net.neoforged.neoforge.network.PacketDistributor;
 
 // Link-state router. Each of its six faces is a port into a separate segment.
 // Every REFRESH_INTERVAL ticks it rebuilds its own LSA from what it sees on its ports; when that changes it
@@ -62,10 +67,41 @@ public class RouterBlockEntity extends BlockEntity implements ControlEndpoint {
     // One supplier in the inventory table.
     public record Supplier(Ipv4Address host, int cost) {}
 
+    // Traffic for network/prefixLength goes to the router port that owns nextHop. Wins over learned routes.
+    public record StaticRoute(Ipv4Address network, int prefixLength, Ipv4Address nextHop) {
+        static final Codec<StaticRoute> CODEC = RecordCodecBuilder.create(instance -> instance.group(
+                Ipv4Address.CODEC.fieldOf("network").forGetter(StaticRoute::network),
+                Codec.INT.fieldOf("prefix_length").forGetter(StaticRoute::prefixLength),
+                Ipv4Address.CODEC.fieldOf("next_hop").forGetter(StaticRoute::nextHop)
+        ).apply(instance, StaticRoute::new));
+
+        // "a.b.c.d/len via e.f.g.h"
+        public static Optional<StaticRoute> parse(String text) {
+            String[] parts = text.trim().split("\\s+");
+            if (parts.length != 3 || !parts[1].equalsIgnoreCase("via")) {
+                return Optional.empty();
+            }
+            Optional<Ipv4Interface> destination = Ipv4Interface.parse(parts[0]);
+            Optional<Ipv4Address> nextHop = Ipv4Address.parse(parts[2]);
+            if (destination.isEmpty() || nextHop.isEmpty()) {
+                return Optional.empty();
+            }
+            return Optional.of(new StaticRoute(destination.get().address(), destination.get().prefixLength(), nextHop.get()));
+        }
+
+        @Override
+        public String toString() {
+            return network + "/" + prefixLength + " via " + nextHop;
+        }
+    }
+
+    public static final int MAX_STATIC_ROUTES = 8;
+
     private record NeighbourInfo(BlockPos pos, Direction port) {}
 
     private MacAddress routerId;
     private final Map<Direction, Ipv4Interface> portAddresses = new EnumMap<>(Direction.class);
+    private final List<StaticRoute> staticRoutes = new ArrayList<>();
 
     // Runtime state, rebuilt after loading.
     private final Map<MacAddress, Lsa> database = new HashMap<>();
@@ -101,6 +137,26 @@ public class RouterBlockEntity extends BlockEntity implements ControlEndpoint {
         }
         refreshCooldown = 0;
         setChanged();
+    }
+
+    public List<StaticRoute> staticRoutes() {
+        return staticRoutes;
+    }
+
+    public boolean addStaticRoute(StaticRoute route) {
+        if (staticRoutes.size() >= MAX_STATIC_ROUTES) {
+            return false;
+        }
+        staticRoutes.add(route);
+        setChanged();
+        return true;
+    }
+
+    public void removeStaticRoute(int index) {
+        if (index >= 0 && index < staticRoutes.size()) {
+            staticRoutes.remove(index);
+            setChanged();
+        }
     }
 
     public Map<MacAddress, Lsa> database() {
@@ -320,8 +376,8 @@ public class RouterBlockEntity extends BlockEntity implements ControlEndpoint {
         }
     }
 
-    // Directly attached hosts first, then the longest matching prefix among other routers' hosts (/32) and
-    // port subnets, cheapest on ties. Returns null when there is no route.
+    // Directly attached hosts first, then static routes (longest prefix), then the longest matching prefix among
+    // other routers' hosts (/32) and port subnets, cheapest on ties. Returns null when there is no route.
     public @Nullable RouteDecision lookup(Ipv4Address destination) {
         if (self == null) {
             return null;
@@ -330,6 +386,10 @@ public class RouterBlockEntity extends BlockEntity implements ControlEndpoint {
             if (host.address().equals(destination)) {
                 return new RouteDecision.Deliver(host.port(), 0);
             }
+        }
+        RouteDecision viaStatic = lookupStatic(destination);
+        if (viaStatic != null) {
+            return viaStatic;
         }
         ensureRoutes();
         RouteDecision best = null;
@@ -357,6 +417,37 @@ public class RouterBlockEntity extends BlockEntity implements ControlEndpoint {
         return best;
     }
 
+    private @Nullable RouteDecision lookupStatic(Ipv4Address destination) {
+        if (!(level instanceof ServerLevel serverLevel)) {
+            return null;
+        }
+        StaticRoute best = null;
+        for (StaticRoute route : staticRoutes) {
+            if (destination.inSubnet(route.network(), route.prefixLength()) && (best == null || route.prefixLength() > best.prefixLength())) {
+                best = route;
+            }
+        }
+        return best == null ? null : nextHopDecision(serverLevel, best.nextHop());
+    }
+
+    // The port whose segment holds a neighbouring router port addressed nextHop; null if no such neighbour.
+    private @Nullable RouteDecision nextHopDecision(ServerLevel level, Ipv4Address nextHop) {
+        NetworkManager manager = NetworkManager.get(level);
+        for (Direction port : Direction.values()) {
+            CableNetwork segment = manager.portNetwork(level, worldPosition, port);
+            for (CableNetwork.RouterAttachment attachment : segment.routers()) {
+                if (level.getBlockEntity(attachment.routerPos()) instanceof RouterBlockEntity neighbour) {
+                    Ipv4Interface address = neighbour.portAddresses.get(attachment.port());
+                    if (address != null && address.address().equals(nextHop)) {
+                        int linkCost = segment.distanceTo(attachment.routerPos());
+                        return new RouteDecision.Forward(port, attachment.routerPos(), linkCost);
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
     private static int matchLength(Lsa lsa, Ipv4Address destination) {
         for (Lsa.HostRoute host : lsa.hosts()) {
             if (host.address().equals(destination)) {
@@ -373,8 +464,89 @@ public class RouterBlockEntity extends BlockEntity implements ControlEndpoint {
         return best;
     }
 
+    // Addresses that appear on more than one attachment anywhere in the database (same address, different segments).
+    public List<Ipv4Address> duplicateAddresses() {
+        Map<Ipv4Address, Set<String>> seen = new HashMap<>();
+        for (Lsa lsa : database.values()) {
+            for (Lsa.HostRoute host : lsa.hosts()) {
+                seen.computeIfAbsent(host.address(), address -> new HashSet<>()).add(lsa.routerId() + "/" + host.port());
+            }
+        }
+        List<Ipv4Address> duplicates = new ArrayList<>();
+        seen.forEach((address, places) -> {
+            if (places.size() > 1) {
+                duplicates.add(address);
+            }
+        });
+        duplicates.sort(Comparator.naturalOrder());
+        return duplicates;
+    }
+
     public void openScreen(ServerPlayer player) {
-        // The router screen arrives with static routes.
+        ServerLevel level = player.level();
+        NetworkManager manager = NetworkManager.get(level);
+        ensureRoutes();
+
+        List<OpenRouterScreenPayload.PortView> ports = new ArrayList<>();
+        for (Direction port : Direction.values()) {
+            CableNetwork segment = manager.portNetwork(level, worldPosition, port);
+            Ipv4Interface address = portAddresses.get(port);
+            ports.add(new OpenRouterScreenPayload.PortView(port.getSerializedName(), address == null ? "" : address.toString(),
+                    (int) segment.routers().stream().filter(attachment -> !attachment.routerPos().equals(worldPosition)).count(),
+                    segment.interfaces().size()));
+        }
+
+        List<OpenRouterScreenPayload.RouteView> routes = new ArrayList<>();
+        if (self != null) {
+            for (Lsa.HostRoute host : self.hosts()) {
+                routes.add(new OpenRouterScreenPayload.RouteView(host.address() + "/32", OpenRouterScreenPayload.KIND_CONNECTED, host.port().getSerializedName(), 0));
+            }
+            for (Lsa.PortAddress portAddress : self.portAddresses()) {
+                routes.add(new OpenRouterScreenPayload.RouteView(networkOf(portAddress.address()), OpenRouterScreenPayload.KIND_CONNECTED,
+                        portAddress.port().getSerializedName(), 0));
+            }
+        }
+        for (StaticRoute route : staticRoutes) {
+            routes.add(new OpenRouterScreenPayload.RouteView(route.network() + "/" + route.prefixLength(), OpenRouterScreenPayload.KIND_STATIC,
+                    route.nextHop().toString(), 0));
+        }
+        for (Map.Entry<MacAddress, ShortestPaths.Path> entry : paths.entrySet()) {
+            Lsa lsa = database.get(entry.getKey());
+            if (lsa == null) {
+                continue;
+            }
+            String via = entry.getValue().firstHop().toString();
+            int cost = entry.getValue().cost();
+            for (Lsa.HostRoute host : lsa.hosts()) {
+                routes.add(new OpenRouterScreenPayload.RouteView(host.address() + "/32", OpenRouterScreenPayload.KIND_LEARNED, via, cost));
+            }
+            for (Lsa.PortAddress portAddress : lsa.portAddresses()) {
+                routes.add(new OpenRouterScreenPayload.RouteView(networkOf(portAddress.address()), OpenRouterScreenPayload.KIND_LEARNED, via, cost));
+            }
+        }
+
+        List<OpenRouterScreenPayload.InventoryView> inventory = new ArrayList<>();
+        for (Lsa lsa : database.values()) {
+            int cost = lsa.routerId().equals(routerId) ? 0 : paths.containsKey(lsa.routerId()) ? paths.get(lsa.routerId()).cost() : -1;
+            if (cost < 0) {
+                continue;
+            }
+            for (Lsa.HostItems hostItems : lsa.items()) {
+                for (ItemStack item : hostItems.items()) {
+                    inventory.add(new OpenRouterScreenPayload.InventoryView(item, hostItems.host().toString(), cost));
+                }
+            }
+        }
+        inventory.sort(Comparator.comparingInt(OpenRouterScreenPayload.InventoryView::cost));
+
+        PacketDistributor.sendToPlayer(player, new OpenRouterScreenPayload(worldPosition, routerId.toString(), ports, routes, inventory,
+                staticRoutes.stream().map(StaticRoute::toString).toList(), duplicateAddresses().stream().map(Ipv4Address::toString).toList()));
+    }
+
+    private static String networkOf(Ipv4Interface address) {
+        int prefix = address.prefixLength();
+        int mask = prefix == 0 ? 0 : -1 << (32 - prefix);
+        return new Ipv4Address(address.address().bits() & mask) + "/" + prefix;
     }
 
     // ---- persistence ----------------------------------------------------------------------------
@@ -383,6 +555,7 @@ public class RouterBlockEntity extends BlockEntity implements ControlEndpoint {
     protected void saveAdditional(ValueOutput output) {
         super.saveAdditional(output);
         output.store("router_id", MacAddress.CODEC, routerId);
+        output.store("static_routes", StaticRoute.CODEC.listOf(), List.copyOf(staticRoutes));
         for (Direction port : Direction.values()) {
             output.storeNullable("port_" + port.getSerializedName(), Ipv4Interface.CODEC, portAddresses.get(port));
         }
@@ -392,6 +565,8 @@ public class RouterBlockEntity extends BlockEntity implements ControlEndpoint {
     protected void loadAdditional(ValueInput input) {
         super.loadAdditional(input);
         input.read("router_id", MacAddress.CODEC).ifPresent(value -> routerId = value);
+        staticRoutes.clear();
+        input.read("static_routes", StaticRoute.CODEC.listOf()).ifPresent(staticRoutes::addAll);
         portAddresses.clear();
         for (Direction port : Direction.values()) {
             input.read("port_" + port.getSerializedName(), Ipv4Interface.CODEC).ifPresent(address -> portAddresses.put(port, address));

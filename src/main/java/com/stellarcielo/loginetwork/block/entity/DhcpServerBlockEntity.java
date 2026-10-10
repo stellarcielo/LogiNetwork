@@ -15,6 +15,7 @@ import com.stellarcielo.loginetwork.address.Ipv4Address;
 import com.stellarcielo.loginetwork.address.Ipv4Interface;
 import com.stellarcielo.loginetwork.address.MacAddress;
 import com.stellarcielo.loginetwork.network.CableNetwork;
+import com.stellarcielo.loginetwork.network.NetworkManager;
 import com.stellarcielo.loginetwork.network.payload.OpenDhcpScreenPayload;
 import com.stellarcielo.loginetwork.registry.ModBlockEntities;
 
@@ -48,9 +49,30 @@ public class DhcpServerBlockEntity extends BlockEntity {
     private int prefixLength = DEFAULT_PREFIX_LENGTH;
     private final Map<MacAddress, Lease> leases = new LinkedHashMap<>();
     private int reclaimCooldown = RECLAIM_INTERVAL;
+    // False only for a server that was just placed; it then takes its own subnet so pools never overlap by default.
+    private boolean poolAssigned;
 
     public DhcpServerBlockEntity(BlockPos pos, BlockState state) {
         super(ModBlockEntities.DHCP_SERVER.get(), pos, state);
+    }
+
+    @Override
+    public void onLoad() {
+        super.onLoad();
+        if (!poolAssigned && level instanceof ServerLevel serverLevel) {
+            int subnet = NetworkManager.get(serverLevel).allocateDhcpSubnet();
+            // Subnets 10.1.0.0/24, 10.2.0.0/24, ... 10.255.0.0/24, then 10.1.1.0/24 and so on.
+            int network = 0x0A000000 | ((1 + (subnet - 1) % 255) << 16) | (((subnet - 1) / 255 & 0xFF) << 8);
+            rangeStart = new Ipv4Address(network | 2);
+            rangeEnd = new Ipv4Address(network | 254);
+            prefixLength = DEFAULT_PREFIX_LENGTH;
+            poolAssigned = true;
+            setChanged();
+        }
+    }
+
+    public Ipv4Address rangeStart() {
+        return rangeStart;
     }
 
     public List<Lease> leases() {
@@ -154,11 +176,14 @@ public class DhcpServerBlockEntity extends BlockEntity {
         output.store("range_end", Ipv4Address.CODEC, rangeEnd);
         output.putInt("prefix_length", prefixLength);
         output.store("leases", Lease.CODEC.listOf(), List.copyOf(leases.values()));
+        output.putBoolean("pool_assigned", poolAssigned);
     }
 
     @Override
     protected void loadAdditional(ValueInput input) {
         super.loadAdditional(input);
+        // Servers saved before pools were assigned per server keep the pool they already had.
+        poolAssigned = input.getBooleanOr("pool_assigned", input.read("range_start", Ipv4Address.CODEC).isPresent());
         rangeStart = input.read("range_start", Ipv4Address.CODEC).orElse(DEFAULT_RANGE_START);
         rangeEnd = input.read("range_end", Ipv4Address.CODEC).orElse(DEFAULT_RANGE_END);
         prefixLength = input.getIntOr("prefix_length", DEFAULT_PREFIX_LENGTH);

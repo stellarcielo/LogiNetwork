@@ -54,7 +54,8 @@ public final class NetworkManager extends SavedData {
             TransitPacket.CODEC.listOf().fieldOf("packets").forGetter(m -> m.packets),
             // Saved under its phase 3 name so existing worlds keep their extract settings.
             BlockPos.CODEC.listOf().fieldOf("extract_cables").forGetter(m -> List.copyOf(m.extractNodes)),
-            Codec.LONG.optionalFieldOf("next_request_id", 1L).forGetter(m -> m.nextRequestId)
+            Codec.LONG.optionalFieldOf("next_request_id", 1L).forGetter(m -> m.nextRequestId),
+            Codec.INT.optionalFieldOf("next_dhcp_subnet", 1).forGetter(m -> m.nextDhcpSubnet)
     ).apply(instance, NetworkManager::new));
 
     public static final SavedDataType<NetworkManager> TYPE = new SavedDataType<>(
@@ -67,14 +68,16 @@ public final class NetworkManager extends SavedData {
     // Segment cache keyed by origin node (or router port); cleared whenever the topology changes.
     private final Map<Object, CableNetwork> networkCache = new HashMap<>();
     private long nextRequestId;
+    private int nextDhcpSubnet;
     private final ControlPlane controlPlane = new ControlPlane(this);
 
     public NetworkManager() {
-        this(0L, List.of(), List.of(), 1L);
+        this(0L, List.of(), List.of(), 1L, 1);
     }
 
-    private NetworkManager(long nextId, List<TransitPacket> packets, List<BlockPos> extractNodes, long nextRequestId) {
+    private NetworkManager(long nextId, List<TransitPacket> packets, List<BlockPos> extractNodes, long nextRequestId, int nextDhcpSubnet) {
         this.nextId = nextId;
+        this.nextDhcpSubnet = nextDhcpSubnet;
         this.nextRequestId = nextRequestId;
         this.packets = new ArrayList<>(packets);
         this.extractNodes = new HashSet<>(extractNodes);
@@ -90,6 +93,12 @@ public final class NetworkManager extends SavedData {
 
     public ControlPlane controlPlane() {
         return controlPlane;
+    }
+
+    // Index of the next default DHCP pool, so newly placed servers do not hand out overlapping addresses.
+    public int allocateDhcpSubnet() {
+        setDirty();
+        return nextDhcpSubnet++;
     }
 
     public long nextRequestId() {
