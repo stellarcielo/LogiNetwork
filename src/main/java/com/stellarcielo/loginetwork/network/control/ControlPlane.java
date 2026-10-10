@@ -104,6 +104,7 @@ public final class ControlPlane {
             }
             message.hop++;
             message.hopStart += TICKS_PER_HOP;
+            manager.capture().recordControl(next, message, now);
             if (level.getBlockEntity(next) instanceof AccessSwitchBlockEntity accessSwitch) {
                 BlockPos previous = message.path.get(message.hop - 1);
                 accessSwitch.learn(message.sourceMac, directionBetween(next, previous), now);

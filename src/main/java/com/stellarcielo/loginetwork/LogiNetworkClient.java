@@ -1,6 +1,7 @@
 package com.stellarcielo.loginetwork;
 
 import com.stellarcielo.loginetwork.client.ClientControlTracker;
+import com.stellarcielo.loginetwork.client.ClientHighlights;
 import com.stellarcielo.loginetwork.client.ClientTransitTracker;
 import com.stellarcielo.loginetwork.client.TransitItemRenderer;
 import com.stellarcielo.loginetwork.client.screen.AccessSwitchScreen;
@@ -8,11 +9,14 @@ import com.stellarcielo.loginetwork.client.screen.DhcpServerScreen;
 import com.stellarcielo.loginetwork.client.screen.NetworkInterfaceScreen;
 import com.stellarcielo.loginetwork.client.screen.RouterScreen;
 import com.stellarcielo.loginetwork.client.screen.StockKeeperScreen;
+import com.stellarcielo.loginetwork.client.screen.TracerouteScreen;
 import com.stellarcielo.loginetwork.network.payload.ControlPathPayload;
+import com.stellarcielo.loginetwork.network.payload.HighlightPathPayload;
 import com.stellarcielo.loginetwork.network.payload.OpenDhcpScreenPayload;
 import com.stellarcielo.loginetwork.network.payload.OpenInterfaceScreenPayload;
 import com.stellarcielo.loginetwork.network.payload.OpenRouterScreenPayload;
 import com.stellarcielo.loginetwork.network.payload.OpenSwitchScreenPayload;
+import com.stellarcielo.loginetwork.network.payload.OpenTraceroutePayload;
 import com.stellarcielo.loginetwork.registry.ModMenus;
 import com.stellarcielo.loginetwork.network.payload.TransitHopPayload;
 import com.stellarcielo.loginetwork.network.payload.TransitRemovePayload;
@@ -41,6 +45,7 @@ public class LogiNetworkClient {
         NeoForge.EVENT_BUS.addListener((ClientTickEvent.Post event) -> {
             if (Minecraft.getInstance().level != null && !Minecraft.getInstance().isPaused()) {
                 ClientTransitTracker.spawnFiberTrails(Minecraft.getInstance().level);
+                ClientHighlights.tick(Minecraft.getInstance().level);
             }
         });
         NeoForge.EVENT_BUS.addListener(TransitItemRenderer::extract);
@@ -48,6 +53,7 @@ public class LogiNetworkClient {
         NeoForge.EVENT_BUS.addListener((ClientPlayerNetworkEvent.LoggingOut event) -> {
             ClientTransitTracker.clear();
             ClientControlTracker.clear();
+            ClientHighlights.clear();
         });
     }
 
@@ -59,6 +65,12 @@ public class LogiNetworkClient {
         event.register(OpenSwitchScreenPayload.TYPE, (payload, context) -> Minecraft.getInstance().gui.setScreen(new AccessSwitchScreen(payload)));
         event.register(ControlPathPayload.TYPE, (payload, context) -> ClientControlTracker.onPath(payload));
         event.register(OpenRouterScreenPayload.TYPE, (payload, context) -> Minecraft.getInstance().gui.setScreen(new RouterScreen(payload)));
+        event.register(OpenTraceroutePayload.TYPE, (payload, context) -> Minecraft.getInstance().gui.setScreen(new TracerouteScreen(payload.pos())));
+        event.register(HighlightPathPayload.TYPE, (payload, context) -> {
+            if (Minecraft.getInstance().level != null) {
+                ClientHighlights.onPath(payload, Minecraft.getInstance().level);
+            }
+        });
     }
 
     private static void registerMenuScreens(RegisterMenuScreensEvent event) {

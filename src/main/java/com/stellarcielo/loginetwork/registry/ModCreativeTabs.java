@@ -25,6 +25,7 @@ public final class ModCreativeTabs {
                 output.accept(ModItems.ACCESS_SWITCH.get());
                 output.accept(ModItems.ROUTER.get());
                 output.accept(ModItems.DISCARD_CHEST.get());
+                output.accept(ModItems.OBSERVATION_TOOL.get());
             }).build());
 
     private ModCreativeTabs() {}

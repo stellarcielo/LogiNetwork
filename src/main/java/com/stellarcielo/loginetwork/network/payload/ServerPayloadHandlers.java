@@ -11,6 +11,7 @@ import com.stellarcielo.loginetwork.block.entity.DhcpServerBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.RouterBlockEntity;
 import com.stellarcielo.loginetwork.menu.StockKeeperMenu;
+import com.stellarcielo.loginetwork.network.observe.Observation;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -21,6 +22,8 @@ import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.network.PacketDistributor;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 // Validates and applies settings sent from the configuration screens.
@@ -119,6 +122,23 @@ public final class ServerPayloadHandlers {
             }
         }
         router.openScreen(player);
+    }
+
+    public static void traceroute(TraceroutePayload payload, IPayloadContext context) {
+        if (!(context.player() instanceof ServerPlayer player) || reachableBlockEntity(player, payload.pos()) == null
+                || !Observation.canTraceFrom(player.level(), payload.pos())) {
+            return;
+        }
+        Optional<Ipv4Address> destination = Ipv4Address.parse(payload.destination());
+        if (destination.isEmpty()) {
+            player.sendOverlayMessage(Component.translatable("message.loginetwork.invalid_address", payload.destination()));
+            return;
+        }
+        Observation.Trace trace = Observation.trace(player.level(), payload.pos(), destination.get());
+        Observation.describeTrace(destination.get(), trace).forEach(player::sendSystemMessage);
+        if (trace.path() != null) {
+            PacketDistributor.sendToPlayer(player, new HighlightPathPayload(trace.path().stream().map(Vec3::atCenterOf).toList()));
+        }
     }
 
     private static @Nullable BlockEntity reachableBlockEntity(ServerPlayer player, BlockPos pos) {

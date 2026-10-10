@@ -22,6 +22,7 @@ import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
 import com.stellarcielo.loginetwork.block.RouterBlock;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 import com.stellarcielo.loginetwork.network.control.ControlPlane;
+import com.stellarcielo.loginetwork.network.observe.PacketCapture;
 import com.stellarcielo.loginetwork.network.payload.TransitHopPayload;
 import com.stellarcielo.loginetwork.network.routing.RoutingService;
 import com.stellarcielo.loginetwork.network.payload.TransitRemovePayload;
@@ -80,6 +81,10 @@ public final class NetworkManager extends SavedData {
     private final Map<PortKey, Long> portBusyUntil = new HashMap<>();
     // Packets queued at or travelling into each switch/router, rebuilt every tick.
     private final Map<BlockPos, Integer> queueLoads = new HashMap<>();
+    // Busy ticks per egress port, counted in fixed windows for the observation tool.
+    private final Map<PortKey, long[]> portUsage = new HashMap<>();
+    private static final int USAGE_WINDOW_TICKS = 100;
+    private final PacketCapture capture = new PacketCapture();
 
     public NetworkManager() {
         this(0L, List.of(), List.of(), 1L, 1);
@@ -166,6 +171,7 @@ public final class NetworkManager extends SavedData {
         }
         portBusyUntil.values().removeIf(until -> until < gameTime);
         controlPlane.tick(level);
+        capture.tick(level, gameTime);
     }
 
     private void extractAll(ServerLevel level, long gameTime) {
@@ -353,8 +359,11 @@ public final class NetworkManager extends SavedData {
             if (portBusyUntil.getOrDefault(port, 0L) > gameTime) {
                 return false;
             }
-            portBusyUntil.put(port, gameTime + mediaBetween(hereState, followingState).serializationTicks(packet.stack.getCount()));
+            int busy = mediaBetween(hereState, followingState).serializationTicks(packet.stack.getCount());
+            portBusyUntil.put(port, gameTime + busy);
+            recordUsage(port, gameTime, busy);
         }
+        capture.recordData(here, packet, gameTime);
         if (isDevice(hereState)) {
             queueLoads.merge(here, -1, Integer::sum);
         }
@@ -397,6 +406,39 @@ public final class NetworkManager extends SavedData {
                 queueLoads.merge(node, 1, Integer::sum);
             }
         }
+    }
+
+    public PacketCapture capture() {
+        return capture;
+    }
+
+    // usage[0] = window start, usage[1] = busy ticks in the current window, usage[2] = busy ticks in the last full window.
+    private void recordUsage(PortKey port, long now, int busyTicks) {
+        long[] usage = portUsage.computeIfAbsent(port, key -> new long[] {now, 0, 0});
+        rollUsage(usage, now);
+        usage[1] += busyTicks;
+    }
+
+    private static void rollUsage(long[] usage, long now) {
+        if (now - usage[0] >= 2L * USAGE_WINDOW_TICKS) {
+            usage[0] = now;
+            usage[1] = 0;
+            usage[2] = 0;
+        } else if (now - usage[0] >= USAGE_WINDOW_TICKS) {
+            usage[0] += USAGE_WINDOW_TICKS;
+            usage[2] = usage[1];
+            usage[1] = 0;
+        }
+    }
+
+    // Share of the last full window an egress port spent sending, 0-100.
+    public int portUtilization(BlockPos node, Direction port, long now) {
+        long[] usage = portUsage.get(new PortKey(node, port));
+        if (usage == null) {
+            return 0;
+        }
+        rollUsage(usage, now);
+        return (int) Math.min(100, usage[2] * 100 / USAGE_WINDOW_TICKS);
     }
 
     // Whether a switch or router has a full input queue (used for control packet loss).

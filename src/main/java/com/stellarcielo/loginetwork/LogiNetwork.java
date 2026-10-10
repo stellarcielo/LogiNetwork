@@ -7,6 +7,7 @@ import com.stellarcielo.loginetwork.gametest.ModGameTests;
 import com.stellarcielo.loginetwork.network.payload.ModPayloads;
 import com.stellarcielo.loginetwork.registry.ModBlockEntities;
 import com.stellarcielo.loginetwork.registry.ModBlocks;
+import com.stellarcielo.loginetwork.registry.ModDataComponents;
 import com.stellarcielo.loginetwork.registry.ModCreativeTabs;
 import com.stellarcielo.loginetwork.registry.ModItems;
 import com.stellarcielo.loginetwork.registry.ModMenus;
@@ -25,6 +26,7 @@ public class LogiNetwork {
     public static final Logger LOGGER = LogUtils.getLogger();
 
     public LogiNetwork(IEventBus modEventBus, ModContainer modContainer) {
+        ModDataComponents.register(modEventBus);
         ModBlocks.register(modEventBus);
         ModItems.register(modEventBus);
         ModBlockEntities.register(modEventBus);

@@ -105,6 +105,18 @@ public final class TransitPacket {
         return nodes.get(hop);
     }
 
+    public @Nullable Ipv4Address destinationAddress() {
+        return destinationAddress;
+    }
+
+    public @Nullable Ipv4Address supplierAddress() {
+        return replyAddress;
+    }
+
+    public long id() {
+        return id;
+    }
+
     public long requestId() {
         return requestId;
     }
@@ -146,7 +158,7 @@ public final class TransitPacket {
         return center.add(neighbour).scale(0.5);
     }
 
-    Vec3 currentPosition(long gameTime) {
+    public Vec3 currentPosition(long gameTime) {
         float progress = hopDuration <= 0 ? 1.0f : Mth.clamp((float) (gameTime - hopStart) / hopDuration, 0.0f, 1.0f);
         return pointOf(hop).lerp(pointOf(hop + 1), progress);
     }

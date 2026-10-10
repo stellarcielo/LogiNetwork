@@ -1,6 +1,7 @@
 package com.stellarcielo.loginetwork.gametest;
 
 import java.util.List;
+import java.util.UUID;
 import java.util.function.Consumer;
 
 import com.stellarcielo.loginetwork.LogiNetwork;
@@ -16,6 +17,7 @@ import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.RouterBlockEntity;
 import com.stellarcielo.loginetwork.network.NetworkManager;
 import com.stellarcielo.loginetwork.network.TransitPacket;
+import com.stellarcielo.loginetwork.network.observe.Observation;
 import com.stellarcielo.loginetwork.network.routing.RoutingService;
 import com.stellarcielo.loginetwork.registry.ModBlocks;
 
@@ -27,6 +29,8 @@ import net.minecraft.gametest.framework.FunctionGameTestInstance;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.gametest.framework.TestData;
 import net.minecraft.gametest.framework.TestEnvironmentDefinition;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.Item;
@@ -98,6 +102,11 @@ public final class ModGameTests {
     private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> HIGH_PRIORITY_OVERTAKES =
             TEST_FUNCTIONS.register("high_priority_overtakes", () -> ModGameTests::highPriorityOvertakes);
 
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> TRACEROUTE_LISTS_ROUTERS =
+            TEST_FUNCTIONS.register("traceroute_lists_routers", () -> ModGameTests::tracerouteListsRouters);
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> CAPTURE_RECORDS_TRAFFIC =
+            TEST_FUNCTIONS.register("capture_records_traffic", () -> ModGameTests::captureRecordsTraffic);
+
     private static final Identifier STRUCTURE = Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "empty_7x3x3");
 
     // Protocol layout (7x3x5): requester chest/interface at x=0/1, cables at x=2 and x=4 with a switch at x=3,
@@ -166,6 +175,8 @@ public final class ModGameTests {
         registerTest(event, environment, OVERFLOW_TO_DISCARD_CHEST, 1200, PROTOCOL_STRUCTURE);
         registerTest(event, environment, BACKPRESSURE_KEEPS_ITEMS, 1200, PROTOCOL_STRUCTURE);
         registerTest(event, environment, HIGH_PRIORITY_OVERTAKES, 1200, PROTOCOL_STRUCTURE);
+        registerTest(event, environment, TRACEROUTE_LISTS_ROUTERS, 300, ROUTED_STRUCTURE);
+        registerTest(event, environment, CAPTURE_RECORDS_TRAFFIC, 300, PROTOCOL_STRUCTURE);
     }
 
     private static void registerTest(RegisterGameTestsEvent event, Holder<TestEnvironmentDefinition<?>> environment,
@@ -543,6 +554,37 @@ public final class ModGameTests {
                         "low-class iron should still be on its way when the high-class gold has arrived"))
                 .thenWaitUntil(() -> helper.assertValueEqual(chest(helper, SUPPLIER_2_CHEST).countItem(Items.IRON_INGOT), 8 * 64, "low-class iron"))
                 .thenSucceed();
+    }
+
+    // From segment B to segment A: router 2, router 1, then the requester itself.
+    private static void tracerouteListsRouters(GameTestHelper helper) {
+        buildRoutedNetwork(helper);
+        helper.succeedWhen(() -> {
+            Observation.Trace trace = Observation.trace(helper.getLevel(), helper.absolutePos(ROUTED_SUPPLIER), ROUTED_REQUESTER_ADDRESS);
+            helper.assertTrue(trace.reached(), "the requester should be reachable");
+            helper.assertValueEqual(trace.hops().size(), 3, "hops");
+            helper.assertValueEqual(trace.hops().get(0).pos(), helper.absolutePos(ROUTER_2), "first hop");
+            helper.assertValueEqual(trace.hops().get(1).pos(), helper.absolutePos(ROUTER_1), "second hop");
+            helper.assertValueEqual(trace.hops().get(2).pos(), helper.absolutePos(ROUTED_REQUESTER), "destination");
+        });
+    }
+
+    // A capture on the switch sees both the control exchange and the delivered items.
+    private static void captureRecordsTraffic(GameTestHelper helper) {
+        buildProtocolLine(helper, false);
+        BlockPos switchPos = helper.absolutePos(SWITCH);
+        NetworkManager.get(helper.getLevel()).capture().start(UUID.randomUUID(), switchPos, helper.getLevel().getGameTime(), 600);
+        keepStocked(helper, REQUESTER, Items.IRON_INGOT, 16);
+        chest(helper, SUPPLIER_1_CHEST).setItem(0, new ItemStack(Items.IRON_INGOT, 64));
+        helper.succeedWhen(() -> {
+            List<Component> entries = NetworkManager.get(helper.getLevel()).capture().entries(switchPos);
+            helper.assertTrue(entries.stream().anyMatch(entry -> isCaptureOf(entry, "observe.loginetwork.capture.control")), "control messages captured");
+            helper.assertTrue(entries.stream().anyMatch(entry -> isCaptureOf(entry, "observe.loginetwork.capture.data")), "items captured");
+        });
+    }
+
+    private static boolean isCaptureOf(Component entry, String key) {
+        return entry.getContents() instanceof TranslatableContents contents && contents.getKey().equals(key);
     }
 
     private static final BlockPos DISCARD_CHEST = new BlockPos(4, 1, 1);
