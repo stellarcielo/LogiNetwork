@@ -1,4 +1,6 @@
 {
+  "itemGroup.loginetwork": "LogiNetwork",
+  "block.loginetwork.copper_cable": "Copper Cable",
   "loginetwork.configuration.title": "LogiNetwork Configs",
   "loginetwork.configuration.section.loginetwork.common.toml": "LogiNetwork Configs",
   "loginetwork.configuration.section.loginetwork.common.toml.title": "LogiNetwork Configs"

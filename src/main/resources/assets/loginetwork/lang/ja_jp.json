@@ -1,4 +1,6 @@
 {
+  "itemGroup.loginetwork": "LogiNetwork",
+  "block.loginetwork.copper_cable": "銅線ケーブル",
   "loginetwork.configuration.title": "LogiNetwork 設定",
   "loginetwork.configuration.section.loginetwork.common.toml": "LogiNetwork 設定",
   "loginetwork.configuration.section.loginetwork.common.toml.title": "LogiNetwork 設定"
