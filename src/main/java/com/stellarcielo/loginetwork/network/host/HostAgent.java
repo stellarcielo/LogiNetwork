@@ -19,6 +19,7 @@ import com.stellarcielo.loginetwork.address.Ipv4Address;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 import com.stellarcielo.loginetwork.network.CableNetwork;
 import com.stellarcielo.loginetwork.network.NetworkManager;
+import com.stellarcielo.loginetwork.network.TransitPacket;
 import com.stellarcielo.loginetwork.network.control.ControlMessage;
 import com.stellarcielo.loginetwork.network.control.ControlMessageType;
 import com.stellarcielo.loginetwork.network.control.ControlPlane;
@@ -304,7 +305,9 @@ public final class HostAgent {
                 break;
             }
             int ask = Math.min(offer.available(), wanted);
-            if (sendTo(level, content(ControlMessageType.RESERVE).request(request.id, request.item, ask, window), offer.supplier())) {
+            // The RESERVE carries our QoS class so the supplier ships at that priority.
+            ControlMessage.Content reserve = content(ControlMessageType.RESERVE).request(request.id, request.item, ask, window).withBody(owner.priority());
+            if (sendTo(level, reserve, offer.supplier())) {
                 request.reserving.merge(offer.supplier(), ask, Integer::sum);
                 wanted -= ask;
             }
@@ -394,7 +397,8 @@ public final class HostAgent {
             return;
         }
         sendTo(level, content(ControlMessageType.ACK).request(message.requestId, message.item, extracted, 0), requester);
-        manager.ship(level, owner.getBlockPos(), requester, message.item.copyWithCount(extracted), message.requestId, ownAddress());
+        int priority = message.body() instanceof Integer requested ? requested : TransitPacket.PRIORITY_NORMAL;
+        manager.ship(level, owner.getBlockPos(), requester, message.item.copyWithCount(extracted), message.requestId, ownAddress(), priority);
         shipments.merge(message.requestId, new Shipment(extracted, now), (old, added) -> {
             Shipment merged = new Shipment(old.shipped + added.shipped, now);
             merged.received = old.received;

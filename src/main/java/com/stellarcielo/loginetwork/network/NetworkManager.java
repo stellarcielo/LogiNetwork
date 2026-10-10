@@ -216,8 +216,13 @@ public final class NetworkManager extends SavedData {
             nodes.add(inventoryPos);
             nodes.addAll(network.pathTo(destination.endpoint.nodePos()));
             nodes.add(destination.endpoint.inventoryPos());
-            launch(level, new TransitPacket(nextId++, resource.toStack(extracted), nodes, true, 0, gameTime, 0, inventoryPos, false, 0,
-                    TransitPacket.NO_REQUEST, null, null), gameTime);
+            TransitPacket packet = new TransitPacket(nextId++, resource.toStack(extracted), nodes, true, 0, gameTime, 0, inventoryPos, false, 0,
+                    TransitPacket.NO_REQUEST, null, null);
+            // Extraction through an interface carries its QoS class; plain cable extraction stays normal.
+            if (level.getBlockEntity(nodePos) instanceof NetworkInterfaceBlockEntity host) {
+                packet.priority = host.priority();
+            }
+            launch(level, packet, gameTime);
             return;
         }
     }
@@ -252,6 +257,11 @@ public final class NetworkManager extends SavedData {
 
     // Sends items already taken out of the supplier's inventory, in packets of at most one stack.
     public void ship(ServerLevel level, BlockPos fromInterface, Ipv4Address destination, ItemStack items, long requestId, @Nullable Ipv4Address supplier) {
+        ship(level, fromInterface, destination, items, requestId, supplier, TransitPacket.PRIORITY_NORMAL);
+    }
+
+    public void ship(ServerLevel level, BlockPos fromInterface, Ipv4Address destination, ItemStack items, long requestId, @Nullable Ipv4Address supplier,
+            int priority) {
         BlockPos supplierInventory = fromInterface.relative(level.getBlockState(fromInterface).getValue(NetworkInterfaceBlock.FACING));
         List<BlockPos> route = routeToInventory(level, fromInterface, destination);
         long gameTime = level.getGameTime();
@@ -266,7 +276,9 @@ public final class NetworkManager extends SavedData {
             List<BlockPos> nodes = new ArrayList<>();
             nodes.add(supplierInventory);
             nodes.addAll(route);
-            launch(level, new TransitPacket(nextId++, part, nodes, true, 0, gameTime, 0, supplierInventory, false, 0, requestId, supplier, destination), gameTime);
+            TransitPacket packet = new TransitPacket(nextId++, part, nodes, true, 0, gameTime, 0, supplierInventory, false, 0, requestId, supplier, destination);
+            packet.priority = priority;
+            launch(level, packet, gameTime);
         }
     }
 
@@ -428,7 +440,7 @@ public final class NetworkManager extends SavedData {
         Vec3 back = packet.pointOf(packet.hop - 1).subtract(device).normalize();
         int place = Math.max(0, queueLoads.getOrDefault(packet.currentNode(), 1) - 1);
         Vec3 spot = device.add(back.scale(0.55 + 0.3 * place));
-        TransitHopPayload payload = new TransitHopPayload(packet.id, packet.stack.copy(), spot, spot, level.getGameTime(), 1);
+        TransitHopPayload payload = new TransitHopPayload(packet.id, packet.stack.copy(), spot, spot, level.getGameTime(), 1, packet.priority);
         PacketDistributor.sendToPlayersTrackingChunk(level, ChunkPos.containing(BlockPos.containing(spot)), payload);
     }
 
@@ -606,10 +618,10 @@ public final class NetworkManager extends SavedData {
     private static TransitHopPayload hopPayload(TransitPacket packet) {
         if (packet.waiting) {
             Vec3 here = packet.pointOf(packet.hop);
-            return new TransitHopPayload(packet.id, packet.stack.copy(), here, here, packet.waitSince, 1);
+            return new TransitHopPayload(packet.id, packet.stack.copy(), here, here, packet.waitSince, 1, packet.priority);
         }
         return new TransitHopPayload(packet.id, packet.stack.copy(), packet.pointOf(packet.hop), packet.pointOf(packet.hop + 1),
-                packet.hopStart, packet.hopDuration);
+                packet.hopStart, packet.hopDuration, packet.priority);
     }
 
     private static void sendRemove(ServerLevel level, TransitPacket packet) {

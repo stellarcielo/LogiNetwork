@@ -14,7 +14,7 @@ import net.minecraft.world.item.ItemStack;
 
 // Server -> client: open the network interface screen with a snapshot of its state. Empty strings mean "none".
 public record OpenInterfaceScreenPayload(BlockPos pos, String mac, boolean dhcp, String staticConfig, String assigned, int status, boolean extract,
-        boolean supply, List<RequestView> requests) implements CustomPacketPayload {
+        boolean supply, int priority, List<RequestView> requests) implements CustomPacketPayload {
     public static final Type<OpenInterfaceScreenPayload> TYPE = new Type<>(Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "open_interface_screen"));
 
     // One outstanding request on the requester side.
@@ -37,6 +37,7 @@ public record OpenInterfaceScreenPayload(BlockPos pos, String mac, boolean dhcp,
             ByteBufCodecs.VAR_INT, OpenInterfaceScreenPayload::status,
             ByteBufCodecs.BOOL, OpenInterfaceScreenPayload::extract,
             ByteBufCodecs.BOOL, OpenInterfaceScreenPayload::supply,
+            ByteBufCodecs.VAR_INT, OpenInterfaceScreenPayload::priority,
             RequestView.STREAM_CODEC.apply(ByteBufCodecs.list()), OpenInterfaceScreenPayload::requests,
             OpenInterfaceScreenPayload::new);
 

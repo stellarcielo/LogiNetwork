@@ -11,6 +11,7 @@ import com.stellarcielo.loginetwork.address.MacAddress;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
 import com.stellarcielo.loginetwork.network.CableNetwork;
 import com.stellarcielo.loginetwork.network.NetworkManager;
+import com.stellarcielo.loginetwork.network.TransitPacket;
 import com.stellarcielo.loginetwork.network.control.ControlEndpoint;
 import com.stellarcielo.loginetwork.network.control.ControlMessage;
 import com.stellarcielo.loginetwork.network.host.HostAgent;
@@ -39,6 +40,8 @@ public class NetworkInterfaceBlockEntity extends BlockEntity implements ControlE
 
     private MacAddress mac;
     private boolean dhcp = true;
+    // QoS class given to items this host requests or extracts (TransitPacket.PRIORITY_*).
+    private int priority = TransitPacket.PRIORITY_NORMAL;
     private @Nullable Ipv4Interface staticConfig;
     private @Nullable Ipv4Interface assigned;
     private @Nullable BlockPos leaseServer;
@@ -90,6 +93,15 @@ public class NetworkInterfaceBlockEntity extends BlockEntity implements ControlE
 
     public InterfaceStatus status() {
         return status;
+    }
+
+    public int priority() {
+        return priority;
+    }
+
+    public void setPriority(int priority) {
+        this.priority = Math.max(TransitPacket.PRIORITY_LOW, Math.min(TransitPacket.PRIORITY_HIGH, priority));
+        setChanged();
     }
 
     public void configure(boolean dhcp, @Nullable Ipv4Interface staticConfig) {
@@ -194,7 +206,7 @@ public class NetworkInterfaceBlockEntity extends BlockEntity implements ControlE
         }
         PacketDistributor.sendToPlayer(player, new OpenInterfaceScreenPayload(worldPosition, mac.toString(), dhcp,
                 staticConfig == null ? "" : staticConfig.toString(), assigned == null ? "" : assigned.toString(),
-                status.ordinal(), getBlockState().getValue(NetworkInterfaceBlock.EXTRACT), host.supplies(), requests));
+                status.ordinal(), getBlockState().getValue(NetworkInterfaceBlock.EXTRACT), host.supplies(), priority, requests));
     }
 
     @Override
@@ -202,6 +214,7 @@ public class NetworkInterfaceBlockEntity extends BlockEntity implements ControlE
         super.saveAdditional(output);
         output.store("mac", MacAddress.CODEC, mac);
         output.putBoolean("dhcp", dhcp);
+        output.putInt("priority", priority);
         output.storeNullable("static", Ipv4Interface.CODEC, staticConfig);
         output.storeNullable("assigned", Ipv4Interface.CODEC, assigned);
         output.storeNullable("lease_server", BlockPos.CODEC, leaseServer);
@@ -214,6 +227,7 @@ public class NetworkInterfaceBlockEntity extends BlockEntity implements ControlE
         super.loadAdditional(input);
         input.read("mac", MacAddress.CODEC).ifPresent(value -> mac = value);
         dhcp = input.getBooleanOr("dhcp", true);
+        priority = input.getIntOr("priority", TransitPacket.PRIORITY_NORMAL);
         staticConfig = input.read("static", Ipv4Interface.CODEC).orElse(null);
         assigned = input.read("assigned", Ipv4Interface.CODEC).orElse(null);
         leaseServer = input.read("lease_server", BlockPos.CODEC).orElse(null);

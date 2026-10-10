@@ -87,5 +87,9 @@
   "message.loginetwork.too_many_static_routes": "A router holds at most %s static routes",
   "block.loginetwork.fiber_cable": "Fiber Optic Cable",
   "block.loginetwork.discard_chest": "Discard Chest",
-  "loginetwork.configuration.controlPacketLoss": "Control Packet Loss"
+  "loginetwork.configuration.controlPacketLoss": "Control Packet Loss",
+  "gui.loginetwork.interface.qos": "QoS: %s",
+  "gui.loginetwork.qos.0": "Low",
+  "gui.loginetwork.qos.1": "Normal",
+  "gui.loginetwork.qos.2": "High"
 }

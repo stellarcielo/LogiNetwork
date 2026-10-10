@@ -15,6 +15,7 @@ import com.stellarcielo.loginetwork.block.entity.InterfaceStatus;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.RouterBlockEntity;
 import com.stellarcielo.loginetwork.network.NetworkManager;
+import com.stellarcielo.loginetwork.network.TransitPacket;
 import com.stellarcielo.loginetwork.network.routing.RoutingService;
 import com.stellarcielo.loginetwork.registry.ModBlocks;
 
@@ -94,6 +95,9 @@ public final class ModGameTests {
     private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> BACKPRESSURE_KEEPS_ITEMS =
             TEST_FUNCTIONS.register("backpressure_keeps_items", () -> ModGameTests::backpressureKeepsItems);
 
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> HIGH_PRIORITY_OVERTAKES =
+            TEST_FUNCTIONS.register("high_priority_overtakes", () -> ModGameTests::highPriorityOvertakes);
+
     private static final Identifier STRUCTURE = Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "empty_7x3x3");
 
     // Protocol layout (7x3x5): requester chest/interface at x=0/1, cables at x=2 and x=4 with a switch at x=3,
@@ -161,6 +165,7 @@ public final class ModGameTests {
         registerTest(event, environment, SWITCH_QUEUES_UNDER_LOAD, 600, PROTOCOL_STRUCTURE);
         registerTest(event, environment, OVERFLOW_TO_DISCARD_CHEST, 1200, PROTOCOL_STRUCTURE);
         registerTest(event, environment, BACKPRESSURE_KEEPS_ITEMS, 1200, PROTOCOL_STRUCTURE);
+        registerTest(event, environment, HIGH_PRIORITY_OVERTAKES, 1200, PROTOCOL_STRUCTURE);
     }
 
     private static void registerTest(RegisterGameTestsEvent event, Holder<TestEnvironmentDefinition<?>> environment,
@@ -510,6 +515,33 @@ public final class ModGameTests {
                 .thenExecute(() -> shipBottleneck(helper, 16))
                 .thenWaitUntil(() -> helper.assertValueEqual(chest(helper, REQUESTER_CHEST).countItem(Items.IRON_INGOT), 16 * 64, "iron at requester"))
                 .thenExecute(() -> helper.assertValueEqual(droppedIron(helper), 0, "dropped iron"))
+                .thenSucceed();
+    }
+
+    // Low-class traffic to a second requester is sent first, then high-class traffic to the first one.
+    // Both share the switch's copper output; the high-class load must finish while low-class is still queued.
+    private static void highPriorityOvertakes(GameTestHelper helper) {
+        buildBottleneck(helper, false);
+        BlockState interfaceState = ModBlocks.NETWORK_INTERFACE.get().defaultBlockState();
+        helper.setBlock(SUPPLIER_2_CHEST, Blocks.CHEST);
+        helper.setBlock(SUPPLIER_2, interfaceState.setValue(NetworkInterfaceBlock.FACING, Direction.NORTH));
+        setStatic(helper, SUPPLIER_2, "10.0.0.3/24");
+        Ipv4Address lowTarget = Ipv4Address.parse("10.0.0.3").orElseThrow();
+        Ipv4Address highTarget = Ipv4Address.parse("10.0.0.1").orElseThrow();
+        Ipv4Address supplier = Ipv4Address.parse("10.0.0.2").orElseThrow();
+        NetworkManager manager = NetworkManager.get(helper.getLevel());
+        helper.startSequence()
+                .thenWaitUntil(() -> helper.assertTrue(bottleneckRouteReady(helper)
+                        && RoutingService.resolve(helper.getLevel(), helper.absolutePos(SUPPLIER_1), lowTarget) != null, "waiting for addresses"))
+                .thenExecute(() -> manager.ship(helper.getLevel(), helper.absolutePos(SUPPLIER_1), lowTarget, new ItemStack(Items.IRON_INGOT, 8 * 64),
+                        1L, supplier, TransitPacket.PRIORITY_LOW))
+                .thenIdle(1)
+                .thenExecute(() -> manager.ship(helper.getLevel(), helper.absolutePos(SUPPLIER_1), highTarget, new ItemStack(Items.GOLD_INGOT, 4 * 64),
+                        2L, supplier, TransitPacket.PRIORITY_HIGH))
+                .thenWaitUntil(() -> helper.assertValueEqual(chest(helper, REQUESTER_CHEST).countItem(Items.GOLD_INGOT), 4 * 64, "high-class gold"))
+                .thenExecute(() -> helper.assertTrue(chest(helper, SUPPLIER_2_CHEST).countItem(Items.IRON_INGOT) < 8 * 64,
+                        "low-class iron should still be on its way when the high-class gold has arrived"))
+                .thenWaitUntil(() -> helper.assertValueEqual(chest(helper, SUPPLIER_2_CHEST).countItem(Items.IRON_INGOT), 8 * 64, "low-class iron"))
                 .thenSucceed();
     }
 

@@ -5,7 +5,7 @@ import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 
 // Client handlers for play-to-client payloads are attached in LogiNetworkClient.
 public final class ModPayloads {
-    private static final String PROTOCOL_VERSION = "4";
+    private static final String PROTOCOL_VERSION = "5";
 
     private ModPayloads() {}
 

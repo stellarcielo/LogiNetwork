@@ -9,6 +9,7 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.math.Axis;
 import com.stellarcielo.loginetwork.Config;
 import com.stellarcielo.loginetwork.LogiNetwork;
+import com.stellarcielo.loginetwork.network.TransitPacket;
 import com.stellarcielo.loginetwork.network.control.ControlMessageType;
 import com.stellarcielo.loginetwork.network.payload.ControlPathPayload;
 import com.stellarcielo.loginetwork.network.payload.TransitHopPayload;
@@ -41,7 +42,11 @@ public final class TransitItemRenderer {
     private static final float CONTROL_SIZE = 0.6f;
     private static final float SPIN_DEGREES_PER_TICK = 4.0f;
 
-    private record TransitRenderState(Vec3 pos, ItemStackRenderState item, int light, float spin, float size) {}
+    private record TransitRenderState(Vec3 pos, ItemStackRenderState item, int light, float spin, float size, int outline) {}
+
+    // QoS look: high class glows with a gold outline, low class gets a grey outline, normal is plain.
+    private static final int HIGH_OUTLINE = 0xFFFFC832;
+    private static final int LOW_OUTLINE = 0xFF808080;
 
     private static final ContextKey<List<TransitRenderState>> RENDER_DATA =
             new ContextKey<>(Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "transit_items"));
@@ -65,7 +70,7 @@ public final class TransitItemRenderer {
         for (TransitHopPayload hop : ClientTransitTracker.hops()) {
             Vec3 pos = ClientTransitTracker.positionAt(hop, time);
             if (isVisible(pos, ITEM_SIZE, camera, maxDistanceSqr, frustum)) {
-                addState(states, level, pos, hop.stack(), (int) hop.id(), spin, ITEM_SIZE);
+                addState(states, level, pos, hop.stack(), (int) hop.id(), spin, ITEM_SIZE, hop.priority());
             }
         }
         if (Config.RENDER_CONTROL_PACKETS.getAsBoolean()) {
@@ -73,7 +78,7 @@ public final class TransitItemRenderer {
                 Vec3 pos = ClientControlTracker.positionAt(path, time);
                 if (isVisible(pos, CONTROL_SIZE, camera, maxDistanceSqr, frustum)) {
                     ControlMessageType type = ControlMessageType.byOrdinal(path.messageType());
-                    addState(states, level, pos, controlIcon(type), type.ordinal(), spin, CONTROL_SIZE);
+                    addState(states, level, pos, controlIcon(type), type.ordinal(), spin, CONTROL_SIZE, TransitPacket.PRIORITY_NORMAL);
                 }
             }
         } else {
@@ -86,12 +91,17 @@ public final class TransitItemRenderer {
         return pos.distanceToSqr(camera) <= maxDistanceSqr && frustum.isVisible(AABB.ofSize(pos, size, size, size));
     }
 
-    private static void addState(List<TransitRenderState> states, ClientLevel level, Vec3 pos, ItemStack stack, int seed, float spin, float size) {
+    private static void addState(List<TransitRenderState> states, ClientLevel level, Vec3 pos, ItemStack stack, int seed, float spin, float size,
+            int priority) {
         ItemStackRenderState item = new ItemStackRenderState();
         Minecraft.getInstance().getItemModelResolver().updateForTopItem(item, stack, ItemDisplayContext.GROUND, level, null, seed);
-        if (!item.isEmpty()) {
-            states.add(new TransitRenderState(pos, item, LightCoordsUtil.getLightCoords(level, BlockPos.containing(pos)), spin, size));
+        if (item.isEmpty()) {
+            return;
         }
+        boolean high = priority == TransitPacket.PRIORITY_HIGH;
+        int light = high ? LightCoordsUtil.FULL_BRIGHT : LightCoordsUtil.getLightCoords(level, BlockPos.containing(pos));
+        int outline = high ? HIGH_OUTLINE : priority == TransitPacket.PRIORITY_LOW ? LOW_OUTLINE : 0;
+        states.add(new TransitRenderState(pos, item, light, spin, size, outline));
     }
 
     // A paper envelope tinted with the message type's colour, with a glint to set it apart from real items.
@@ -122,7 +132,7 @@ public final class TransitItemRenderer {
             poseStack.mulPose(Axis.YP.rotationDegrees(state.spin()));
             poseStack.scale(scale, scale, scale);
             poseStack.translate(-center.x, -center.y, -center.z);
-            state.item().submit(poseStack, event.getSubmitNodeCollector(), state.light(), OverlayTexture.NO_OVERLAY, 0);
+            state.item().submit(poseStack, event.getSubmitNodeCollector(), state.light(), OverlayTexture.NO_OVERLAY, state.outline());
             poseStack.popPose();
         }
     }

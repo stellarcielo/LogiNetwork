@@ -25,6 +25,7 @@ public class NetworkInterfaceScreen extends Screen {
     private boolean dhcp;
     private boolean extract;
     private boolean supply;
+    private int priority;
     private EditBox staticEdit;
 
     public NetworkInterfaceScreen(OpenInterfaceScreenPayload data) {
@@ -33,6 +34,7 @@ public class NetworkInterfaceScreen extends Screen {
         this.dhcp = data.dhcp();
         this.extract = data.extract();
         this.supply = data.supply();
+        this.priority = data.priority();
     }
 
     private int left() {
@@ -61,14 +63,19 @@ public class NetworkInterfaceScreen extends Screen {
         this.staticEdit.setEditable(!dhcp);
         this.addRenderableWidget(this.staticEdit);
 
+        int third = (PANEL_WIDTH - 8) / 3;
         this.addRenderableWidget(Button.builder(extractLabel(), button -> {
             extract = !extract;
             button.setMessage(extractLabel());
-        }).bounds(left, y + 60, half, 20).build());
+        }).bounds(left, y + 60, third, 20).build());
         this.addRenderableWidget(Button.builder(supplyLabel(), button -> {
             supply = !supply;
             button.setMessage(supplyLabel());
-        }).bounds(left + half + 4, y + 60, half, 20).build());
+        }).bounds(left + third + 4, y + 60, third, 20).build());
+        this.addRenderableWidget(Button.builder(priorityLabel(), button -> {
+            priority = (priority + 1) % 3;
+            button.setMessage(priorityLabel());
+        }).bounds(left + 2 * (third + 4), y + 60, third, 20).build());
 
         this.addRenderableWidget(Button.builder(Component.translatable("gui.loginetwork.interface.stock_keeper"), button -> {
             apply();
@@ -101,8 +108,12 @@ public class NetworkInterfaceScreen extends Screen {
         return Component.translatable("gui.loginetwork.interface.supply", CommonComponents.optionStatus(supply));
     }
 
+    private Component priorityLabel() {
+        return Component.translatable("gui.loginetwork.interface.qos", Component.translatable("gui.loginetwork.qos." + priority));
+    }
+
     private void apply() {
-        ClientPacketDistributor.sendToServer(new ConfigureInterfacePayload(data.pos(), dhcp, staticEdit.getValue().trim(), extract, supply));
+        ClientPacketDistributor.sendToServer(new ConfigureInterfacePayload(data.pos(), dhcp, staticEdit.getValue().trim(), extract, supply, priority));
     }
 
     @Override

@@ -45,6 +45,7 @@ public final class ServerPayloadHandlers {
         }
         blockEntity.configure(payload.dhcp(), staticConfig);
         blockEntity.host().setSupply(payload.supply());
+        blockEntity.setPriority(payload.priority());
 
         ServerLevel level = player.level();
         BlockState state = level.getBlockState(payload.pos());

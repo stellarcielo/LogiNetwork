@@ -87,5 +87,9 @@
   "message.loginetwork.too_many_static_routes": "静的ルートは1台につき%s件までです",
   "block.loginetwork.fiber_cable": "光ファイバーケーブル",
   "block.loginetwork.discard_chest": "廃棄チェスト",
-  "loginetwork.configuration.controlPacketLoss": "制御パケットの損失"
+  "loginetwork.configuration.controlPacketLoss": "制御パケットの損失",
+  "gui.loginetwork.interface.qos": "QoS: %s",
+  "gui.loginetwork.qos.0": "低",
+  "gui.loginetwork.qos.1": "通常",
+  "gui.loginetwork.qos.2": "高"
 }
