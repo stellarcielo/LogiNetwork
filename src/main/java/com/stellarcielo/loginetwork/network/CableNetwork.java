@@ -9,6 +9,8 @@ import java.util.Map;
 
 import com.stellarcielo.loginetwork.block.AccessSwitchBlock;
 import com.stellarcielo.loginetwork.block.CableBlock;
+import com.stellarcielo.loginetwork.block.CableType;
+import com.stellarcielo.loginetwork.block.DiscardChestBlock;
 import com.stellarcielo.loginetwork.block.DhcpServerBlock;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
 import com.stellarcielo.loginetwork.block.RouterBlock;
@@ -27,7 +29,8 @@ import org.jspecify.annotations.Nullable;
 // A CableNetwork is therefore exactly one segment (one broadcast domain).
 public final class CableNetwork {
     // A node side that faces an inventory: a cable's inventory connection or an interface's front.
-    public record Endpoint(BlockPos nodePos, Direction side, boolean extract) {
+    // discard: the inventory is a discard chest, used only as an overflow sink.
+    public record Endpoint(BlockPos nodePos, Direction side, boolean extract, boolean discard) {
         public BlockPos inventoryPos() {
             return nodePos.relative(side);
         }
@@ -40,18 +43,21 @@ public final class CableNetwork {
     private final List<BlockPos> interfaces;
     private final List<BlockPos> dhcpServers;
     private final List<RouterAttachment> routers;
+    // Link cost of entering each node (cable cost per block; zero for devices).
+    private final Map<BlockPos, Integer> weights;
 
     // A router reached by the search, and the router port this segment is attached to.
     public record RouterAttachment(BlockPos routerPos, Direction port) {}
 
     private CableNetwork(BlockPos origin, Map<BlockPos, BlockPos> parents, List<Endpoint> endpoints, List<BlockPos> interfaces,
-            List<BlockPos> dhcpServers, List<RouterAttachment> routers) {
+            List<BlockPos> dhcpServers, List<RouterAttachment> routers, Map<BlockPos, Integer> weights) {
         this.origin = origin;
         this.parents = parents;
         this.endpoints = endpoints;
         this.interfaces = interfaces;
         this.dhcpServers = dhcpServers;
         this.routers = routers;
+        this.weights = weights;
     }
 
     public static CableNetwork explore(ServerLevel level, BlockPos origin) {
@@ -69,6 +75,7 @@ public final class CableNetwork {
         List<BlockPos> interfaces = new ArrayList<>();
         List<BlockPos> dhcpServers = new ArrayList<>();
         List<RouterAttachment> routers = new ArrayList<>();
+        Map<BlockPos, Integer> weights = new HashMap<>();
         ArrayDeque<BlockPos> queue = new ArrayDeque<>();
         parents.put(origin, origin);
         queue.add(origin);
@@ -79,6 +86,8 @@ public final class CableNetwork {
             }
             BlockState state = level.getBlockState(pos);
             boolean isOrigin = pos.equals(origin);
+            CableType cableType = CableBlock.typeOf(state);
+            weights.put(pos.immutable(), cableType == null ? 0 : cableType.costPerBlock());
             if (state.getBlock() instanceof CableBlock) {
                 for (Direction direction : Direction.values()) {
                     if (!state.getValue(CableBlock.PROPERTY_BY_DIRECTION.get(direction))) {
@@ -88,7 +97,8 @@ public final class CableNetwork {
                     if (level.isLoaded(neighbour) && NetworkNodes.isNode(level.getBlockState(neighbour))) {
                         visit(parents, queue, neighbour, pos);
                     } else {
-                        endpoints.add(new Endpoint(pos.immutable(), direction, state.getValue(CableBlock.EXTRACT_BY_DIRECTION.get(direction))));
+                        endpoints.add(new Endpoint(pos.immutable(), direction, state.getValue(CableBlock.EXTRACT_BY_DIRECTION.get(direction)),
+                                isDiscardChest(level, neighbour)));
                     }
                 }
             } else if (state.getBlock() instanceof NetworkInterfaceBlock) {
@@ -96,7 +106,7 @@ public final class CableNetwork {
                 Direction front = state.getValue(NetworkInterfaceBlock.FACING);
                 BlockPos inventoryPos = pos.relative(front);
                 if (level.isLoaded(inventoryPos) && level.getCapability(Capabilities.Item.BLOCK, inventoryPos, front.getOpposite()) != null) {
-                    endpoints.add(new Endpoint(pos.immutable(), front, state.getValue(NetworkInterfaceBlock.EXTRACT)));
+                    endpoints.add(new Endpoint(pos.immutable(), front, state.getValue(NetworkInterfaceBlock.EXTRACT), isDiscardChest(level, inventoryPos)));
                 }
                 if (isOrigin) {
                     visitAttachedCables(level, parents, queue, pos);
@@ -119,7 +129,11 @@ public final class CableNetwork {
                 }
             }
         }
-        return new CableNetwork(origin, parents, endpoints, interfaces, dhcpServers, routers);
+        return new CableNetwork(origin, parents, endpoints, interfaces, dhcpServers, routers, weights);
+    }
+
+    private static boolean isDiscardChest(ServerLevel level, BlockPos pos) {
+        return level.isLoaded(pos) && level.getBlockState(pos).getBlock() instanceof DiscardChestBlock;
     }
 
     private static void visit(Map<BlockPos, BlockPos> parents, ArrayDeque<BlockPos> queue, BlockPos pos, BlockPos parent) {
@@ -169,6 +183,17 @@ public final class CableNetwork {
     // Number of links between the origin and a node in this segment.
     public int distanceTo(BlockPos nodePos) {
         return pathTo(nodePos).size() - 1;
+    }
+
+    // Link cost from the origin to a node: the sum of the cable costs along the way.
+    public int costTo(BlockPos nodePos) {
+        int cost = 0;
+        for (BlockPos pos : pathTo(nodePos)) {
+            if (!pos.equals(origin)) {
+                cost += weights.getOrDefault(pos, 0);
+            }
+        }
+        return cost;
     }
 
     // Node positions from the origin to the given node, both inclusive.

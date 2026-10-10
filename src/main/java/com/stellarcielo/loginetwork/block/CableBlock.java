@@ -3,7 +3,10 @@ package com.stellarcielo.loginetwork.block;
 import java.util.Map;
 
 import com.google.common.collect.ImmutableMap;
+import org.jspecify.annotations.Nullable;
+
 import com.mojang.serialization.MapCodec;
+import com.mojang.serialization.codecs.RecordCodecBuilder;
 import com.stellarcielo.loginetwork.network.NetworkManager;
 import com.stellarcielo.loginetwork.network.NetworkNodes;
 
@@ -30,7 +33,10 @@ import net.neoforged.neoforge.capabilities.Capabilities;
 // Pipe-style cable (link). Connects to other network nodes and to any block exposing an item handler.
 // A side facing an inventory can be switched to extract mode (phase 3 stand-in until network interfaces exist).
 public class CableBlock extends PipeBlock {
-    public static final MapCodec<CableBlock> CODEC = simpleCodec(CableBlock::new);
+    public static final MapCodec<CableBlock> CODEC = RecordCodecBuilder.mapCodec(instance -> instance.group(
+            CableType.CODEC.fieldOf("cable_type").forGetter(CableBlock::type),
+            propertiesCodec()
+    ).apply(instance, CableBlock::new));
 
     public static final BooleanProperty EXTRACT_NORTH = BooleanProperty.create("extract_north");
     public static final BooleanProperty EXTRACT_EAST = BooleanProperty.create("extract_east");
@@ -49,8 +55,11 @@ public class CableBlock extends PipeBlock {
     private static final float CABLE_SIZE = 6.0f;
     private static final double CORE_HALF_SIZE = CABLE_SIZE / 32.0;
 
-    public CableBlock(Properties properties) {
+    private final CableType type;
+
+    public CableBlock(CableType type, Properties properties) {
         super(CABLE_SIZE, properties);
+        this.type = type;
         BlockState state = this.stateDefinition.any();
         for (Direction direction : Direction.values()) {
             state = state.setValue(PROPERTY_BY_DIRECTION.get(direction), false).setValue(EXTRACT_BY_DIRECTION.get(direction), false);
@@ -61,6 +70,15 @@ public class CableBlock extends PipeBlock {
     @Override
     protected MapCodec<CableBlock> codec() {
         return CODEC;
+    }
+
+    public CableType type() {
+        return type;
+    }
+
+    // The cable type of a node, or null for anything that is not a cable.
+    public static @Nullable CableType typeOf(BlockState state) {
+        return state.getBlock() instanceof CableBlock cable ? cable.type : null;
     }
 
     @Override

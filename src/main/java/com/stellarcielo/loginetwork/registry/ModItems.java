@@ -12,6 +12,8 @@ public final class ModItems {
     public static final DeferredRegister.Items ITEMS = DeferredRegister.createItems(LogiNetwork.MOD_ID);
 
     public static final DeferredItem<BlockItem> COPPER_CABLE = ITEMS.registerSimpleBlockItem(ModBlocks.COPPER_CABLE);
+    public static final DeferredItem<BlockItem> FIBER_CABLE = ITEMS.registerSimpleBlockItem(ModBlocks.FIBER_CABLE);
+    public static final DeferredItem<BlockItem> DISCARD_CHEST = ITEMS.registerSimpleBlockItem(ModBlocks.DISCARD_CHEST);
     public static final DeferredItem<BlockItem> NETWORK_INTERFACE = ITEMS.registerSimpleBlockItem(ModBlocks.NETWORK_INTERFACE);
     public static final DeferredItem<BlockItem> DHCP_SERVER = ITEMS.registerSimpleBlockItem(ModBlocks.DHCP_SERVER);
     public static final DeferredItem<BlockItem> ACCESS_SWITCH = ITEMS.registerSimpleBlockItem(ModBlocks.ACCESS_SWITCH);

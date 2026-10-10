@@ -213,7 +213,7 @@ public class RouterBlockEntity extends BlockEntity implements ControlEndpoint {
             CableNetwork segment = manager.portNetwork(level, worldPosition, port);
             for (CableNetwork.RouterAttachment attachment : segment.routers()) {
                 if (!attachment.routerPos().equals(worldPosition) && level.getBlockEntity(attachment.routerPos()) instanceof RouterBlockEntity neighbour) {
-                    links.add(new Lsa.Link(neighbour.routerId, port, segment.distanceTo(attachment.routerPos())));
+                    links.add(new Lsa.Link(neighbour.routerId, port, Math.max(1, segment.costTo(attachment.routerPos()))));
                     neighbours.putIfAbsent(neighbour.routerId, new NeighbourInfo(attachment.routerPos(), port));
                 }
             }
@@ -439,7 +439,7 @@ public class RouterBlockEntity extends BlockEntity implements ControlEndpoint {
                 if (level.getBlockEntity(attachment.routerPos()) instanceof RouterBlockEntity neighbour) {
                     Ipv4Interface address = neighbour.portAddresses.get(attachment.port());
                     if (address != null && address.address().equals(nextHop)) {
-                        int linkCost = segment.distanceTo(attachment.routerPos());
+                        int linkCost = segment.costTo(attachment.routerPos());
                         return new RouteDecision.Forward(port, attachment.routerPos(), linkCost);
                     }
                 }

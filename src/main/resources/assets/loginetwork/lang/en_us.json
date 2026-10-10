@@ -84,5 +84,8 @@
   "gui.loginetwork.router.static_header": "Static routes (preferred over learned routes)",
   "gui.loginetwork.router.duplicates": "Duplicate addresses across segments: %s",
   "message.loginetwork.invalid_static_route": "Invalid static route: %s (expected a.b.c.d/len via e.f.g.h)",
-  "message.loginetwork.too_many_static_routes": "A router holds at most %s static routes"
+  "message.loginetwork.too_many_static_routes": "A router holds at most %s static routes",
+  "block.loginetwork.fiber_cable": "Fiber Optic Cable",
+  "block.loginetwork.discard_chest": "Discard Chest",
+  "loginetwork.configuration.controlPacketLoss": "Control Packet Loss"
 }

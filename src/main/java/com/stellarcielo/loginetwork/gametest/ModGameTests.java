@@ -10,6 +10,7 @@ import com.stellarcielo.loginetwork.block.CableBlock;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
 import com.stellarcielo.loginetwork.block.entity.AccessSwitchBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.DhcpServerBlockEntity;
+import com.stellarcielo.loginetwork.block.entity.DiscardChestBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.InterfaceStatus;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.RouterBlockEntity;
@@ -84,6 +85,15 @@ public final class ModGameTests {
     private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> DHCP_POOLS_DO_NOT_OVERLAP =
             TEST_FUNCTIONS.register("dhcp_pools_do_not_overlap", () -> ModGameTests::dhcpPoolsDoNotOverlap);
 
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> FIBER_IS_FASTER =
+            TEST_FUNCTIONS.register("fiber_is_faster", () -> ModGameTests::fiberIsFaster);
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> SWITCH_QUEUES_UNDER_LOAD =
+            TEST_FUNCTIONS.register("switch_queues_under_load", () -> ModGameTests::switchQueuesUnderLoad);
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> OVERFLOW_TO_DISCARD_CHEST =
+            TEST_FUNCTIONS.register("overflow_to_discard_chest", () -> ModGameTests::overflowToDiscardChest);
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> BACKPRESSURE_KEEPS_ITEMS =
+            TEST_FUNCTIONS.register("backpressure_keeps_items", () -> ModGameTests::backpressureKeepsItems);
+
     private static final Identifier STRUCTURE = Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "empty_7x3x3");
 
     // Protocol layout (7x3x5): requester chest/interface at x=0/1, cables at x=2 and x=4 with a switch at x=3,
@@ -147,6 +157,10 @@ public final class ModGameTests {
         registerTest(event, environment, WITHDRAW_WHEN_SOLD_OUT, 600, ROUTED_STRUCTURE);
         registerTest(event, environment, STATIC_ROUTE_PREFERRED, 400, ROUTED_STRUCTURE);
         registerTest(event, environment, DHCP_POOLS_DO_NOT_OVERLAP, 20);
+        registerTest(event, environment, FIBER_IS_FASTER, 200);
+        registerTest(event, environment, SWITCH_QUEUES_UNDER_LOAD, 600, PROTOCOL_STRUCTURE);
+        registerTest(event, environment, OVERFLOW_TO_DISCARD_CHEST, 1200, PROTOCOL_STRUCTURE);
+        registerTest(event, environment, BACKPRESSURE_KEEPS_ITEMS, 1200, PROTOCOL_STRUCTURE);
     }
 
     private static void registerTest(RegisterGameTestsEvent event, Holder<TestEnvironmentDefinition<?>> environment,
@@ -441,6 +455,92 @@ public final class ModGameTests {
                 new ItemStack(Items.IRON_INGOT, count), 1L, ROUTED_SUPPLIER_ADDRESS);
     }
 
+    // On fibre a packet crosses one block per tick.
+    private static void fiberIsFaster(GameTestHelper helper) {
+        helper.setBlock(CHEST_A, Blocks.CHEST);
+        helper.setBlock(CHEST_B, Blocks.CHEST);
+        for (int x = FIRST_CABLE_X; x <= LAST_CABLE_X; x++) {
+            placeCable(helper, new BlockPos(x, 1, 1), ModBlocks.FIBER_CABLE.get());
+        }
+        BlockPos first = new BlockPos(FIRST_CABLE_X, 1, 1);
+        helper.setBlock(first, helper.getBlockState(first).setValue(CableBlock.EXTRACT_WEST, true));
+        chest(helper, CHEST_A).setItem(0, new ItemStack(Items.IRON_INGOT, 8));
+        BlockPos middle = helper.absolutePos(new BlockPos(3, 1, 1));
+        helper.succeedWhen(() -> helper.assertTrue(NetworkManager.get(helper.getLevel()).packets().stream()
+                .anyMatch(packet -> packet.currentNode().equals(middle) && !packet.isWaiting() && packet.hopDuration() == 1),
+                "waiting for a packet crossing the fibre at one block per tick"));
+    }
+
+    // Fibre into the switch, copper out of it: the switch's output is the bottleneck, so packets queue there.
+    private static void switchQueuesUnderLoad(GameTestHelper helper) {
+        buildBottleneck(helper, false);
+        BlockPos switchPos = helper.absolutePos(SWITCH);
+        int[] longestQueue = {0};
+        helper.startSequence()
+                .thenWaitUntil(() -> helper.assertTrue(bottleneckRouteReady(helper), "waiting for addresses"))
+                .thenExecute(() -> shipBottleneck(helper, 6))
+                .thenWaitUntil(() -> {
+                    longestQueue[0] = Math.max(longestQueue[0], NetworkManager.get(helper.getLevel()).queueLength(switchPos));
+                    helper.assertValueEqual(chest(helper, REQUESTER_CHEST).countItem(Items.IRON_INGOT), 6 * 64, "iron at requester");
+                })
+                .thenExecute(() -> helper.assertTrue(longestQueue[0] >= 2, "the switch should have queued packets, longest queue " + longestQueue[0]))
+                .thenSucceed();
+    }
+
+    // More than the switch can hold: the excess goes to the discard chest and nothing is lost.
+    private static void overflowToDiscardChest(GameTestHelper helper) {
+        buildBottleneck(helper, true);
+        helper.startSequence()
+                .thenWaitUntil(() -> helper.assertTrue(bottleneckRouteReady(helper), "waiting for addresses"))
+                .thenExecute(() -> shipBottleneck(helper, 16))
+                .thenWaitUntil(() -> {
+                    int discarded = helper.getBlockEntity(DISCARD_CHEST, DiscardChestBlockEntity.class).countItem(Items.IRON_INGOT);
+                    int delivered = chest(helper, REQUESTER_CHEST).countItem(Items.IRON_INGOT);
+                    helper.assertTrue(discarded > 0, "some iron should overflow into the discard chest");
+                    helper.assertValueEqual(delivered + discarded, 16 * 64, "iron delivered or discarded");
+                })
+                .thenSucceed();
+    }
+
+    // Same load without a discard chest: senders wait, everything arrives and nothing is dropped.
+    private static void backpressureKeepsItems(GameTestHelper helper) {
+        buildBottleneck(helper, false);
+        helper.startSequence()
+                .thenWaitUntil(() -> helper.assertTrue(bottleneckRouteReady(helper), "waiting for addresses"))
+                .thenExecute(() -> shipBottleneck(helper, 16))
+                .thenWaitUntil(() -> helper.assertValueEqual(chest(helper, REQUESTER_CHEST).countItem(Items.IRON_INGOT), 16 * 64, "iron at requester"))
+                .thenExecute(() -> helper.assertValueEqual(droppedIron(helper), 0, "dropped iron"))
+                .thenSucceed();
+    }
+
+    private static final BlockPos DISCARD_CHEST = new BlockPos(4, 1, 1);
+
+    // Protocol layout with fibre between supplier 1 and the switch and copper towards the requester.
+    private static void buildBottleneck(GameTestHelper helper, boolean withDiscardChest) {
+        BlockState interfaceState = ModBlocks.NETWORK_INTERFACE.get().defaultBlockState();
+        helper.setBlock(REQUESTER_CHEST, Blocks.CHEST);
+        helper.setBlock(SUPPLIER_1_CHEST, Blocks.CHEST);
+        helper.setBlock(REQUESTER, interfaceState.setValue(NetworkInterfaceBlock.FACING, Direction.WEST));
+        helper.setBlock(SUPPLIER_1, interfaceState.setValue(NetworkInterfaceBlock.FACING, Direction.EAST));
+        helper.setBlock(SWITCH, ModBlocks.ACCESS_SWITCH.get());
+        if (withDiscardChest) {
+            helper.setBlock(DISCARD_CHEST, ModBlocks.DISCARD_CHEST.get());
+        }
+        setStatic(helper, REQUESTER, "10.0.0.1/24");
+        setStatic(helper, SUPPLIER_1, "10.0.0.2/24");
+        placeCable(helper, new BlockPos(2, 1, 2));
+        placeCable(helper, new BlockPos(4, 1, 2), ModBlocks.FIBER_CABLE.get());
+    }
+
+    private static boolean bottleneckRouteReady(GameTestHelper helper) {
+        return RoutingService.resolve(helper.getLevel(), helper.absolutePos(SUPPLIER_1), Ipv4Address.parse("10.0.0.1").orElseThrow()) != null;
+    }
+
+    private static void shipBottleneck(GameTestHelper helper, int stacks) {
+        NetworkManager.get(helper.getLevel()).ship(helper.getLevel(), helper.absolutePos(SUPPLIER_1), Ipv4Address.parse("10.0.0.1").orElseThrow(),
+                new ItemStack(Items.IRON_INGOT, stacks * 64), 1L, Ipv4Address.parse("10.0.0.2").orElseThrow());
+    }
+
     private static void buildProtocolLine(GameTestHelper helper, boolean withSecondSupplier) {
         BlockState interfaceState = ModBlocks.NETWORK_INTERFACE.get().defaultBlockState();
         helper.setBlock(REQUESTER_CHEST, Blocks.CHEST);
@@ -483,7 +583,11 @@ public final class ModGameTests {
     }
 
     private static void placeCable(GameTestHelper helper, BlockPos pos) {
-        BlockState state = CableBlock.withConnections(ModBlocks.COPPER_CABLE.get().defaultBlockState(), helper.getLevel(), helper.absolutePos(pos));
+        placeCable(helper, pos, ModBlocks.COPPER_CABLE.get());
+    }
+
+    private static void placeCable(GameTestHelper helper, BlockPos pos, CableBlock cable) {
+        BlockState state = CableBlock.withConnections(cable.defaultBlockState(), helper.getLevel(), helper.absolutePos(pos));
         helper.setBlock(pos, state);
     }
 

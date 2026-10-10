@@ -5,6 +5,7 @@ import java.util.List;
 
 import org.jspecify.annotations.Nullable;
 
+import com.stellarcielo.loginetwork.Config;
 import com.stellarcielo.loginetwork.address.Ipv4Address;
 import com.stellarcielo.loginetwork.block.entity.AccessSwitchBlockEntity;
 import com.stellarcielo.loginetwork.network.CableNetwork;
@@ -95,6 +96,10 @@ public final class ControlPlane {
             BlockPos next = message.path.get(message.hop + 1);
             if (!level.isLoaded(next) || !NetworkNodes.isNode(level.getBlockState(next))) {
                 // The link is gone: the message is lost.
+                return true;
+            }
+            if (Config.CONTROL_PACKET_LOSS.getAsBoolean() && manager.isCongested(next)) {
+                // Optional congestion loss (7.5); the protocol's timeouts recover.
                 return true;
             }
             message.hop++;

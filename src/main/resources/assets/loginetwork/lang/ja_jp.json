@@ -84,5 +84,8 @@
   "gui.loginetwork.router.static_header": "静的ルート（学習した経路より優先）",
   "gui.loginetwork.router.duplicates": "セグメント間でアドレスが重複しています: %s",
   "message.loginetwork.invalid_static_route": "無効な静的ルートです: %s（a.b.c.d/プレフィックス長 via e.f.g.h の形式で入力してください）",
-  "message.loginetwork.too_many_static_routes": "静的ルートは1台につき%s件までです"
+  "message.loginetwork.too_many_static_routes": "静的ルートは1台につき%s件までです",
+  "block.loginetwork.fiber_cable": "光ファイバーケーブル",
+  "block.loginetwork.discard_chest": "廃棄チェスト",
+  "loginetwork.configuration.controlPacketLoss": "制御パケットの損失"
 }

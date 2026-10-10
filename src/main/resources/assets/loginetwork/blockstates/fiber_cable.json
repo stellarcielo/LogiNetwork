@@ -1,0 +1,121 @@
+{
+  "multipart": [
+    {
+      "apply": {
+        "model": "loginetwork:block/fiber_cable_core"
+      }
+    },
+    {
+      "when": {
+        "north": "true",
+        "extract_north": "false"
+      },
+      "apply": {
+        "model": "loginetwork:block/fiber_cable_side"
+      }
+    },
+    {
+      "when": {
+        "extract_north": "true"
+      },
+      "apply": {
+        "model": "loginetwork:block/fiber_cable_extract"
+      }
+    },
+    {
+      "when": {
+        "east": "true",
+        "extract_east": "false"
+      },
+      "apply": {
+        "model": "loginetwork:block/fiber_cable_side",
+        "y": 90
+      }
+    },
+    {
+      "when": {
+        "extract_east": "true"
+      },
+      "apply": {
+        "model": "loginetwork:block/fiber_cable_extract",
+        "y": 90
+      }
+    },
+    {
+      "when": {
+        "south": "true",
+        "extract_south": "false"
+      },
+      "apply": {
+        "model": "loginetwork:block/fiber_cable_side",
+        "y": 180
+      }
+    },
+    {
+      "when": {
+        "extract_south": "true"
+      },
+      "apply": {
+        "model": "loginetwork:block/fiber_cable_extract",
+        "y": 180
+      }
+    },
+    {
+      "when": {
+        "west": "true",
+        "extract_west": "false"
+      },
+      "apply": {
+        "model": "loginetwork:block/fiber_cable_side",
+        "y": 270
+      }
+    },
+    {
+      "when": {
+        "extract_west": "true"
+      },
+      "apply": {
+        "model": "loginetwork:block/fiber_cable_extract",
+        "y": 270
+      }
+    },
+    {
+      "when": {
+        "up": "true",
+        "extract_up": "false"
+      },
+      "apply": {
+        "model": "loginetwork:block/fiber_cable_side",
+        "x": 270
+      }
+    },
+    {
+      "when": {
+        "extract_up": "true"
+      },
+      "apply": {
+        "model": "loginetwork:block/fiber_cable_extract",
+        "x": 270
+      }
+    },
+    {
+      "when": {
+        "down": "true",
+        "extract_down": "false"
+      },
+      "apply": {
+        "model": "loginetwork:block/fiber_cable_side",
+        "x": 90
+      }
+    },
+    {
+      "when": {
+        "extract_down": "true"
+      },
+      "apply": {
+        "model": "loginetwork:block/fiber_cable_extract",
+        "x": 90
+      }
+    }
+  ]
+}

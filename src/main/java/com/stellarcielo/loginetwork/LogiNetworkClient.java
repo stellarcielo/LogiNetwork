@@ -23,6 +23,7 @@ import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.RegisterMenuScreensEvent;
 import net.neoforged.neoforge.client.gui.ConfigurationScreen;
 import net.neoforged.neoforge.client.gui.IConfigScreenFactory;
@@ -37,6 +38,11 @@ public class LogiNetworkClient {
 
         modEventBus.addListener(LogiNetworkClient::registerPayloadHandlers);
         modEventBus.addListener(LogiNetworkClient::registerMenuScreens);
+        NeoForge.EVENT_BUS.addListener((ClientTickEvent.Post event) -> {
+            if (Minecraft.getInstance().level != null && !Minecraft.getInstance().isPaused()) {
+                ClientTransitTracker.spawnFiberTrails(Minecraft.getInstance().level);
+            }
+        });
         NeoForge.EVENT_BUS.addListener(TransitItemRenderer::extract);
         NeoForge.EVENT_BUS.addListener(TransitItemRenderer::submit);
         NeoForge.EVENT_BUS.addListener((ClientPlayerNetworkEvent.LoggingOut event) -> {

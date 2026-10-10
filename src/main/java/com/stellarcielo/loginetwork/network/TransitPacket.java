@@ -18,6 +18,10 @@ import net.minecraft.world.phys.Vec3;
 // nodes: [source inventory?] cable... destination inventory. The packet moves from nodes[hop] to nodes[hop + 1].
 public final class TransitPacket {
     public static final long NO_REQUEST = 0L;
+    // QoS classes; higher is sent first from a queue.
+    public static final int PRIORITY_LOW = 0;
+    public static final int PRIORITY_NORMAL = 1;
+    public static final int PRIORITY_HIGH = 2;
 
     public static final Codec<TransitPacket> CODEC = RecordCodecBuilder.create(instance -> instance.group(
             Codec.LONG.fieldOf("id").forGetter(p -> p.id),
@@ -32,10 +36,20 @@ public final class TransitPacket {
             Codec.INT.fieldOf("reroutes").forGetter(p -> p.reroutes),
             Codec.LONG.optionalFieldOf("request_id", NO_REQUEST).forGetter(p -> p.requestId),
             Ipv4Address.CODEC.optionalFieldOf("reply_address").forGetter(p -> Optional.ofNullable(p.replyAddress)),
-            Ipv4Address.CODEC.optionalFieldOf("destination_address").forGetter(p -> Optional.ofNullable(p.destinationAddress))
+            Ipv4Address.CODEC.optionalFieldOf("destination_address").forGetter(p -> Optional.ofNullable(p.destinationAddress)),
+            Codec.BOOL.optionalFieldOf("waiting", false).forGetter(p -> p.waiting),
+            Codec.LONG.optionalFieldOf("wait_since", 0L).forGetter(p -> p.waitSince),
+            Codec.INT.optionalFieldOf("priority", PRIORITY_NORMAL).forGetter(p -> p.priority)
     ).apply(instance, (id, stack, nodes, startsAtInventory, hop, hopStart, hopDuration, source, returning, reroutes, requestId, replyAddress,
-            destinationAddress) -> new TransitPacket(id, stack, nodes, startsAtInventory, hop, hopStart, hopDuration, source, returning, reroutes,
-            requestId, replyAddress.orElse(null), destinationAddress.orElse(null))));
+            destinationAddress, waiting, waitSince, priority) -> {
+        TransitPacket packet = new TransitPacket(id, stack, nodes, startsAtInventory, hop, hopStart, hopDuration, source, returning, reroutes,
+                requestId, replyAddress.orElse(null), destinationAddress.orElse(null));
+        packet.waiting = waiting;
+        packet.waitSince = waitSince;
+        packet.priority = priority;
+        return packet;
+    }));
+
 
     final long id;
     ItemStack stack;
@@ -52,6 +66,10 @@ public final class TransitPacket {
     final long requestId;
     final @Nullable Ipv4Address replyAddress;
     final @Nullable Ipv4Address destinationAddress;
+    // Stopped at nodes[hop], waiting to be sent on (port busy, next device full, or queued in a device).
+    boolean waiting;
+    long waitSince;
+    int priority = PRIORITY_NORMAL;
 
     TransitPacket(long id, ItemStack stack, List<BlockPos> nodes, boolean startsAtInventory, int hop, long hopStart,
             int hopDuration, BlockPos source, boolean returning, int reroutes, long requestId, @Nullable Ipv4Address replyAddress,
@@ -71,6 +89,22 @@ public final class TransitPacket {
         this.destinationAddress = destinationAddress;
     }
 
+    public boolean isWaiting() {
+        return waiting;
+    }
+
+    public int hopDuration() {
+        return hopDuration;
+    }
+
+    public int priority() {
+        return priority;
+    }
+
+    public BlockPos currentNode() {
+        return nodes.get(hop);
+    }
+
     public long requestId() {
         return requestId;
     }
@@ -87,6 +121,7 @@ public final class TransitPacket {
         this.nodes = List.copyOf(nodes);
         this.startsAtInventory = startsAtInventory;
         this.hop = 0;
+        this.waiting = false;
     }
 
     int lastIndex() {

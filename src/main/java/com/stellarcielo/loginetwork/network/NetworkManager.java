@@ -1,6 +1,7 @@
 package com.stellarcielo.loginetwork.network;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -14,7 +15,11 @@ import com.mojang.serialization.Codec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import com.stellarcielo.loginetwork.LogiNetwork;
 import com.stellarcielo.loginetwork.address.Ipv4Address;
+import com.stellarcielo.loginetwork.block.AccessSwitchBlock;
+import com.stellarcielo.loginetwork.block.CableBlock;
+import com.stellarcielo.loginetwork.block.CableType;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
+import com.stellarcielo.loginetwork.block.RouterBlock;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 import com.stellarcielo.loginetwork.network.control.ControlPlane;
 import com.stellarcielo.loginetwork.network.payload.TransitHopPayload;
@@ -44,8 +49,9 @@ import net.neoforged.neoforge.transfer.transaction.Transaction;
 // Per-dimension owner of everything moving through cables: extraction, routing, movement and delivery.
 // Phase 3 rules: push from extract-mode sides to the nearest accepting inventory; never delete items.
 public final class NetworkManager extends SavedData {
-    public static final int TICKS_PER_BLOCK = 4;
     public static final int EXTRACT_INTERVAL = 20;
+    // Packets a switch or router holds (queued or arriving) before senders have to wait or divert to a discard chest.
+    public static final int QUEUE_CAPACITY = 8;
     public static final int EXTRACT_AMOUNT = 8;
     private static final int MAX_REROUTES = 8;
 
@@ -70,6 +76,10 @@ public final class NetworkManager extends SavedData {
     private long nextRequestId;
     private int nextDhcpSubnet;
     private final ControlPlane controlPlane = new ControlPlane(this);
+    // Egress ports (node + direction) busy sending until the given tick.
+    private final Map<PortKey, Long> portBusyUntil = new HashMap<>();
+    // Packets queued at or travelling into each switch/router, rebuilt every tick.
+    private final Map<BlockPos, Integer> queueLoads = new HashMap<>();
 
     public NetworkManager() {
         this(0L, List.of(), List.of(), 1L, 1);
@@ -133,7 +143,8 @@ public final class NetworkManager extends SavedData {
         return networkCache.computeIfAbsent(origin.immutable(), o -> CableNetwork.explore(level, (BlockPos) o));
     }
 
-    private record PortKey(BlockPos routerPos, Direction port) {}
+    // A router port (for segment caching) or any node's egress port (for bandwidth).
+    private record PortKey(BlockPos nodePos, Direction port) {}
 
     // The segment on one port of a router.
     public CableNetwork portNetwork(ServerLevel level, BlockPos routerPos, Direction port) {
@@ -147,9 +158,13 @@ public final class NetworkManager extends SavedData {
         if (gameTime % EXTRACT_INTERVAL == 0) {
             extractAll(level, gameTime);
         }
+        // Queued packets leave in QoS order: higher class first, then first come, first served.
+        packets.sort(Comparator.comparingInt((TransitPacket packet) -> -packet.priority).thenComparingLong(packet -> packet.waitSince));
+        rebuildQueueLoads(level);
         if (packets.removeIf(packet -> advance(level, packet, gameTime))) {
             setDirty();
         }
+        portBusyUntil.values().removeIf(until -> until < gameTime);
         controlPlane.tick(level);
     }
 
@@ -269,34 +284,152 @@ public final class NetworkManager extends SavedData {
 
     // Returns true when the packet has left the cables.
     private boolean advance(ServerLevel level, TransitPacket packet, long gameTime) {
-        int next = packet.hop + 1;
-        if (!level.isLoaded(packet.nodes.get(packet.hop)) || !level.isLoaded(packet.nodes.get(next))) {
-            // Pause while any part of the current segment is unloaded.
-            packet.hopStart++;
+        if (!packet.waiting) {
+            int next = packet.hop + 1;
+            if (!level.isLoaded(packet.nodes.get(packet.hop)) || !level.isLoaded(packet.nodes.get(next))) {
+                // Pause while any part of the current segment is unloaded.
+                packet.hopStart++;
+                return false;
+            }
+            if (isBroken(level, packet, packet.hop) || isBroken(level, packet, next)) {
+                drop(level, packet, packet.currentPosition(gameTime));
+                return true;
+            }
+            if (gameTime < packet.hopStart + packet.hopDuration) {
+                return false;
+            }
+            if (next == packet.lastIndex()) {
+                return deliver(level, packet, gameTime);
+            }
+            // Arrived at a node; from here on it waits until it may be sent on.
+            packet.hop = next;
+            packet.waiting = true;
+            packet.waitSince = gameTime;
+            setDirty();
+            if (isDevice(level.getBlockState(packet.currentNode()))) {
+                showInQueue(level, packet);
+            }
+        }
+        return depart(level, packet, gameTime);
+    }
+
+    // Sends a waiting packet on when the next device has room and our outgoing port is free.
+    private boolean depart(ServerLevel level, TransitPacket packet, long gameTime) {
+        BlockPos here = packet.currentNode();
+        BlockPos following = packet.nodes.get(packet.hop + 1);
+        if (!level.isLoaded(here) || !level.isLoaded(following)) {
             return false;
         }
-        if (isBroken(level, packet, packet.hop) || isBroken(level, packet, next)) {
-            drop(level, packet, packet.currentPosition(gameTime));
+        if (isBroken(level, packet, packet.hop)) {
+            drop(level, packet, packet.pointOf(packet.hop));
             return true;
         }
-        if (gameTime < packet.hopStart + packet.hopDuration) {
-            return false;
-        }
-        if (next == packet.lastIndex()) {
-            return deliver(level, packet, gameTime);
-        }
-        BlockPos following = packet.nodes.get(next + 1);
-        if (!level.isLoaded(following)) {
-            return false;
-        }
-        if (isBroken(level, packet, next + 1)) {
+        if (isBroken(level, packet, packet.hop + 1)) {
             // The route ahead is gone; find another way from the node we are standing on.
-            return reroute(level, packet, packet.nodes.get(next), null, gameTime);
+            return reroute(level, packet, here, null, gameTime);
         }
-        packet.hop = next;
+        boolean intoNode = packet.hop + 1 < packet.lastIndex();
+        BlockState followingState = level.getBlockState(following);
+        if (intoNode && isDevice(followingState) && queueLoads.getOrDefault(following, 0) >= QUEUE_CAPACITY) {
+            // The next device is full: spill into a discard chest if this segment has one, otherwise wait here.
+            divertToDiscard(level, packet, here, gameTime);
+            return false;
+        }
+        BlockState hereState = level.getBlockState(here);
+        if (intoNode && isTransmitter(hereState)) {
+            PortKey port = new PortKey(here, directionBetween(here, following));
+            if (portBusyUntil.getOrDefault(port, 0L) > gameTime) {
+                return false;
+            }
+            portBusyUntil.put(port, gameTime + mediaBetween(hereState, followingState).serializationTicks(packet.stack.getCount()));
+        }
+        if (isDevice(hereState)) {
+            queueLoads.merge(here, -1, Integer::sum);
+        }
+        if (intoNode && isDevice(followingState)) {
+            queueLoads.merge(following, 1, Integer::sum);
+        }
+        packet.waiting = false;
         startHop(level, packet, gameTime);
         setDirty();
         return false;
+    }
+
+    private void divertToDiscard(ServerLevel level, TransitPacket packet, BlockPos here, long gameTime) {
+        if (!isNodeWithSegment(level.getBlockState(here))) {
+            return;
+        }
+        CableNetwork network = network(level, here);
+        for (CableNetwork.Endpoint endpoint : network.endpoints()) {
+            if (!endpoint.discard() || simulateInsert(level, endpoint, ItemResource.of(packet.stack), packet.stack.getCount()) <= 0) {
+                continue;
+            }
+            List<BlockPos> path = network.pathTo(endpoint.nodePos());
+            if (path.stream().anyMatch(pos -> queueLoads.getOrDefault(pos, 0) >= QUEUE_CAPACITY && isDevice(level.getBlockState(pos)))) {
+                continue;
+            }
+            List<BlockPos> nodes = new ArrayList<>(path);
+            nodes.add(endpoint.inventoryPos());
+            packet.setRoute(nodes, false);
+            startHop(level, packet, gameTime);
+            setDirty();
+            return;
+        }
+    }
+
+    private void rebuildQueueLoads(ServerLevel level) {
+        queueLoads.clear();
+        for (TransitPacket packet : packets) {
+            BlockPos node = packet.waiting ? packet.currentNode() : packet.hop + 1 < packet.lastIndex() ? packet.nodes.get(packet.hop + 1) : null;
+            if (node != null && level.isLoaded(node) && isDevice(level.getBlockState(node))) {
+                queueLoads.merge(node, 1, Integer::sum);
+            }
+        }
+    }
+
+    // Whether a switch or router has a full input queue (used for control packet loss).
+    public boolean isCongested(BlockPos devicePos) {
+        return queueLoads.getOrDefault(devicePos, 0) >= QUEUE_CAPACITY;
+    }
+
+    public int queueLength(BlockPos devicePos) {
+        return queueLoads.getOrDefault(devicePos, 0);
+    }
+
+    private static boolean isDevice(BlockState state) {
+        return state.getBlock() instanceof AccessSwitchBlock || state.getBlock() instanceof RouterBlock;
+    }
+
+    private static boolean isTransmitter(BlockState state) {
+        return isDevice(state) || state.getBlock() instanceof NetworkInterfaceBlock;
+    }
+
+    // Routers only see the segment on one port, so searching "from" a router is meaningless.
+    private static boolean isNodeWithSegment(BlockState state) {
+        return NetworkNodes.isNode(state) && !(state.getBlock() instanceof RouterBlock);
+    }
+
+    // The cable a hop runs over decides its speed and bandwidth; the slower end wins.
+    private static CableType mediaBetween(BlockState a, BlockState b) {
+        CableType first = CableBlock.typeOf(a);
+        CableType second = CableBlock.typeOf(b);
+        if (first == null) {
+            return second == null ? CableType.COPPER : second;
+        }
+        if (second == null) {
+            return first;
+        }
+        return first.ticksPerBlock() >= second.ticksPerBlock() ? first : second;
+    }
+
+    // Draws a queued packet in a line in front of the device instead of inside it.
+    private void showInQueue(ServerLevel level, TransitPacket packet) {
+        Vec3 device = packet.pointOf(packet.hop);
+        Vec3 back = packet.pointOf(packet.hop - 1).subtract(device).normalize();
+        int place = Math.max(0, queueLoads.getOrDefault(packet.currentNode(), 1) - 1);
+        Vec3 spot = device.add(back.scale(0.55 + 0.3 * place));
+        TransitHopPayload payload = new TransitHopPayload(packet.id, packet.stack.copy(), spot, spot, level.getGameTime(), 1);
+        PacketDistributor.sendToPlayersTrackingChunk(level, ChunkPos.containing(BlockPos.containing(spot)), payload);
     }
 
     private static boolean isBroken(ServerLevel level, TransitPacket packet, int index) {
@@ -398,7 +531,7 @@ public final class NetworkManager extends SavedData {
 
     private @Nullable Destination findDestination(ServerLevel level, CableNetwork network, ItemResource resource, int amount, BlockPos... excluded) {
         for (CableNetwork.Endpoint endpoint : network.endpoints()) {
-            if (endpoint.extract() || isExcluded(endpoint.inventoryPos(), excluded)) {
+            if (endpoint.extract() || endpoint.discard() || isExcluded(endpoint.inventoryPos(), excluded)) {
                 continue;
             }
             int accepts = simulateInsert(level, endpoint, resource, amount);
@@ -458,8 +591,9 @@ public final class NetworkManager extends SavedData {
     private void startHop(ServerLevel level, TransitPacket packet, long gameTime) {
         Vec3 from = packet.pointOf(packet.hop);
         Vec3 to = packet.pointOf(packet.hop + 1);
+        CableType media = mediaBetween(level.getBlockState(packet.nodes.get(packet.hop)), level.getBlockState(packet.nodes.get(packet.hop + 1)));
         packet.hopStart = gameTime;
-        packet.hopDuration = Math.max(1, Mth.ceil(from.distanceTo(to) * TICKS_PER_BLOCK));
+        packet.hopDuration = Math.max(1, Mth.ceil(from.distanceTo(to) * media.ticksPerBlock()));
         TransitHopPayload payload = hopPayload(packet);
         ChunkPos fromChunk = ChunkPos.containing(BlockPos.containing(from));
         ChunkPos toChunk = ChunkPos.containing(BlockPos.containing(to));
@@ -470,6 +604,10 @@ public final class NetworkManager extends SavedData {
     }
 
     private static TransitHopPayload hopPayload(TransitPacket packet) {
+        if (packet.waiting) {
+            Vec3 here = packet.pointOf(packet.hop);
+            return new TransitHopPayload(packet.id, packet.stack.copy(), here, here, packet.waitSince, 1);
+        }
         return new TransitHopPayload(packet.id, packet.stack.copy(), packet.pointOf(packet.hop), packet.pointOf(packet.hop + 1),
                 packet.hopStart, packet.hopDuration);
     }

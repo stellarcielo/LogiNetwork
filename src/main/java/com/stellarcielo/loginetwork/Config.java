@@ -10,6 +10,10 @@ public class Config {
             .comment("Ticks without progress (offer, ack or delivery) before a request or reservation is dropped and asked again")
             .defineInRange("reserveTimeoutTicks", 200, 20, 72000);
 
+    public static final ModConfigSpec.BooleanValue CONTROL_PACKET_LOSS = COMMON_BUILDER
+            .comment("Lose control messages that reach a switch or router whose input queue is full")
+            .define("controlPacketLoss", false);
+
     static final ModConfigSpec COMMON_SPEC = COMMON_BUILDER.build();
 
     private static final ModConfigSpec.Builder CLIENT_BUILDER = new ModConfigSpec.Builder();

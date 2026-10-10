@@ -41,7 +41,7 @@ public final class RoutingService {
                 if (level.getBlockEntity(attachment.routerPos()) instanceof RouterBlockEntity candidate) {
                     RouteDecision decision = candidate.lookup(destination);
                     if (decision != null) {
-                        int cost = segment.distanceTo(attachment.routerPos()) + decision.cost();
+                        int cost = segment.costTo(attachment.routerPos()) + decision.cost();
                         if (cost < bestCost) {
                             bestCost = cost;
                             router = attachment.routerPos();

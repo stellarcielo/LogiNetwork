@@ -15,6 +15,9 @@ import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.config.ModConfig;
+import net.neoforged.neoforge.capabilities.Capabilities;
+import net.neoforged.neoforge.capabilities.RegisterCapabilitiesEvent;
+import net.neoforged.neoforge.transfer.item.VanillaContainerWrapper;
 
 @Mod(LogiNetwork.MOD_ID)
 public class LogiNetwork {
@@ -29,8 +32,13 @@ public class LogiNetwork {
         ModCreativeTabs.register(modEventBus);
         modEventBus.addListener(ModPayloads::register);
         ModGameTests.register(modEventBus);
+        modEventBus.addListener(LogiNetwork::registerCapabilities);
 
         modContainer.registerConfig(ModConfig.Type.COMMON, Config.COMMON_SPEC);
         modContainer.registerConfig(ModConfig.Type.CLIENT, Config.CLIENT_SPEC);
+    }
+
+    private static void registerCapabilities(RegisterCapabilitiesEvent event) {
+        event.registerBlockEntity(Capabilities.Item.BLOCK, ModBlockEntities.DISCARD_CHEST.get(), (chest, side) -> VanillaContainerWrapper.of(chest));
     }
 }
