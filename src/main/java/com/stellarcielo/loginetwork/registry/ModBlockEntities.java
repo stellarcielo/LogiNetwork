@@ -1,6 +1,7 @@
 package com.stellarcielo.loginetwork.registry;
 
 import com.stellarcielo.loginetwork.LogiNetwork;
+import com.stellarcielo.loginetwork.block.entity.AccessSwitchBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.DhcpServerBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 
@@ -18,6 +19,9 @@ public final class ModBlockEntities {
 
     public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<DhcpServerBlockEntity>> DHCP_SERVER =
             BLOCK_ENTITY_TYPES.register("dhcp_server", () -> new BlockEntityType<>(DhcpServerBlockEntity::new, ModBlocks.DHCP_SERVER.get()));
+
+    public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<AccessSwitchBlockEntity>> ACCESS_SWITCH =
+            BLOCK_ENTITY_TYPES.register("access_switch", () -> new BlockEntityType<>(AccessSwitchBlockEntity::new, ModBlocks.ACCESS_SWITCH.get()));
 
     private ModBlockEntities() {}
 

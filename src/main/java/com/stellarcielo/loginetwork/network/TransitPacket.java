@@ -1,6 +1,9 @@
 package com.stellarcielo.loginetwork.network;
 
 import java.util.List;
+import java.util.Optional;
+
+import org.jspecify.annotations.Nullable;
 
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
@@ -13,6 +16,8 @@ import net.minecraft.world.phys.Vec3;
 // An item stack travelling through cables.
 // nodes: [source inventory?] cable... destination inventory. The packet moves from nodes[hop] to nodes[hop + 1].
 public final class TransitPacket {
+    public static final long NO_REQUEST = 0L;
+
     public static final Codec<TransitPacket> CODEC = RecordCodecBuilder.create(instance -> instance.group(
             Codec.LONG.fieldOf("id").forGetter(p -> p.id),
             ItemStack.CODEC.fieldOf("stack").forGetter(p -> p.stack),
@@ -23,8 +28,11 @@ public final class TransitPacket {
             Codec.INT.fieldOf("hop_duration").forGetter(p -> p.hopDuration),
             BlockPos.CODEC.fieldOf("source").forGetter(p -> p.source),
             Codec.BOOL.fieldOf("returning").forGetter(p -> p.returning),
-            Codec.INT.fieldOf("reroutes").forGetter(p -> p.reroutes)
-    ).apply(instance, TransitPacket::new));
+            Codec.INT.fieldOf("reroutes").forGetter(p -> p.reroutes),
+            Codec.LONG.optionalFieldOf("request_id", NO_REQUEST).forGetter(p -> p.requestId),
+            BlockPos.CODEC.optionalFieldOf("reply_to").forGetter(p -> Optional.ofNullable(p.replyTo))
+    ).apply(instance, (id, stack, nodes, startsAtInventory, hop, hopStart, hopDuration, source, returning, reroutes, requestId, replyTo) ->
+            new TransitPacket(id, stack, nodes, startsAtInventory, hop, hopStart, hopDuration, source, returning, reroutes, requestId, replyTo.orElse(null))));
 
     final long id;
     ItemStack stack;
@@ -36,9 +44,12 @@ public final class TransitPacket {
     final BlockPos source;
     boolean returning;
     int reroutes;
+    // Set for deliveries made under the request protocol; replyTo is the supplying interface.
+    final long requestId;
+    final @Nullable BlockPos replyTo;
 
     TransitPacket(long id, ItemStack stack, List<BlockPos> nodes, boolean startsAtInventory, int hop, long hopStart,
-            int hopDuration, BlockPos source, boolean returning, int reroutes) {
+            int hopDuration, BlockPos source, boolean returning, int reroutes, long requestId, @Nullable BlockPos replyTo) {
         this.id = id;
         this.stack = stack;
         this.nodes = List.copyOf(nodes);
@@ -49,6 +60,12 @@ public final class TransitPacket {
         this.source = source;
         this.returning = returning;
         this.reroutes = reroutes;
+        this.requestId = requestId;
+        this.replyTo = replyTo;
+    }
+
+    public long requestId() {
+        return requestId;
     }
 
     public ItemStack stack() {

@@ -139,7 +139,7 @@ public class CableBlock extends PipeBlock {
     }
 
     private static boolean canConnectTo(LevelReader level, BlockPos neighbourPos, BlockState neighbourState, Direction directionToNeighbour) {
-        if (isCable(neighbourState) || neighbourState.getBlock() instanceof DhcpServerBlock) {
+        if (isCable(neighbourState) || neighbourState.getBlock() instanceof DhcpServerBlock || neighbourState.getBlock() instanceof AccessSwitchBlock) {
             return true;
         }
         if (neighbourState.getBlock() instanceof NetworkInterfaceBlock) {

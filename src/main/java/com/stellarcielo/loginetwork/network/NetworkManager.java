@@ -13,6 +13,9 @@ import org.jspecify.annotations.Nullable;
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import com.stellarcielo.loginetwork.LogiNetwork;
+import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
+import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
+import com.stellarcielo.loginetwork.network.control.ControlPlane;
 import com.stellarcielo.loginetwork.network.payload.TransitHopPayload;
 import com.stellarcielo.loginetwork.network.payload.TransitRemovePayload;
 
@@ -47,7 +50,8 @@ public final class NetworkManager extends SavedData {
             Codec.LONG.fieldOf("next_id").forGetter(m -> m.nextId),
             TransitPacket.CODEC.listOf().fieldOf("packets").forGetter(m -> m.packets),
             // Saved under its phase 3 name so existing worlds keep their extract settings.
-            BlockPos.CODEC.listOf().fieldOf("extract_cables").forGetter(m -> List.copyOf(m.extractNodes))
+            BlockPos.CODEC.listOf().fieldOf("extract_cables").forGetter(m -> List.copyOf(m.extractNodes)),
+            Codec.LONG.optionalFieldOf("next_request_id", 1L).forGetter(m -> m.nextRequestId)
     ).apply(instance, NetworkManager::new));
 
     public static final SavedDataType<NetworkManager> TYPE = new SavedDataType<>(
@@ -59,13 +63,16 @@ public final class NetworkManager extends SavedData {
     private final Set<BlockPos> extractNodes;
     // Route cache keyed by origin cable; cleared whenever the topology changes.
     private final Map<BlockPos, CableNetwork> networkCache = new HashMap<>();
+    private long nextRequestId;
+    private final ControlPlane controlPlane = new ControlPlane(this);
 
     public NetworkManager() {
-        this(0L, List.of(), List.of());
+        this(0L, List.of(), List.of(), 1L);
     }
 
-    private NetworkManager(long nextId, List<TransitPacket> packets, List<BlockPos> extractNodes) {
+    private NetworkManager(long nextId, List<TransitPacket> packets, List<BlockPos> extractNodes, long nextRequestId) {
         this.nextId = nextId;
+        this.nextRequestId = nextRequestId;
         this.packets = new ArrayList<>(packets);
         this.extractNodes = new HashSet<>(extractNodes);
     }
@@ -76,6 +83,15 @@ public final class NetworkManager extends SavedData {
 
     public List<TransitPacket> packets() {
         return packets;
+    }
+
+    public ControlPlane controlPlane() {
+        return controlPlane;
+    }
+
+    public long nextRequestId() {
+        setDirty();
+        return nextRequestId++;
     }
 
     // ---- topology -------------------------------------------------------------------------------
@@ -115,6 +131,7 @@ public final class NetworkManager extends SavedData {
         if (packets.removeIf(packet -> advance(level, packet, gameTime))) {
             setDirty();
         }
+        controlPlane.tick(level);
     }
 
     private void extractAll(ServerLevel level, long gameTime) {
@@ -165,11 +182,38 @@ public final class NetworkManager extends SavedData {
             nodes.add(inventoryPos);
             nodes.addAll(network.pathTo(destination.endpoint.nodePos()));
             nodes.add(destination.endpoint.inventoryPos());
-            TransitPacket packet = new TransitPacket(nextId++, resource.toStack(extracted), nodes, true, 0, gameTime, 0, inventoryPos, false, 0);
-            startHop(level, packet, gameTime);
-            packets.add(packet);
-            setDirty();
+            launch(level, new TransitPacket(nextId++, resource.toStack(extracted), nodes, true, 0, gameTime, 0, inventoryPos, false, 0,
+                    TransitPacket.NO_REQUEST, null), gameTime);
             return;
+        }
+    }
+
+    private void launch(ServerLevel level, TransitPacket packet, long gameTime) {
+        startHop(level, packet, gameTime);
+        packets.add(packet);
+        setDirty();
+    }
+
+    // ---- request deliveries ---------------------------------------------------------------------
+
+    // Whether a delivery between the inventories in front of two interfaces has a route right now.
+    public boolean canShip(ServerLevel level, BlockPos fromInterface, BlockPos toInterface) {
+        return network(level, fromInterface).contains(toInterface) && level.getBlockState(toInterface).getBlock() instanceof NetworkInterfaceBlock;
+    }
+
+    // Sends items already taken out of the supplier's inventory, in packets of at most one stack.
+    public void ship(ServerLevel level, BlockPos fromInterface, BlockPos toInterface, ItemStack items, long requestId) {
+        BlockPos supplierInventory = fromInterface.relative(level.getBlockState(fromInterface).getValue(NetworkInterfaceBlock.FACING));
+        BlockPos requesterInventory = toInterface.relative(level.getBlockState(toInterface).getValue(NetworkInterfaceBlock.FACING));
+        List<BlockPos> nodes = new ArrayList<>();
+        nodes.add(supplierInventory);
+        nodes.addAll(network(level, fromInterface).pathTo(toInterface));
+        nodes.add(requesterInventory);
+        long gameTime = level.getGameTime();
+        int packetSize = Math.max(1, items.getMaxStackSize());
+        while (!items.isEmpty()) {
+            ItemStack part = items.split(packetSize);
+            launch(level, new TransitPacket(nextId++, part, nodes, true, 0, gameTime, 0, supplierInventory, false, 0, requestId, fromInterface), gameTime);
         }
     }
 
@@ -220,6 +264,10 @@ public final class NetworkManager extends SavedData {
             try (Transaction tx = Transaction.openRoot()) {
                 inserted = target.insert(resource, packet.stack.getCount(), tx);
                 tx.commit();
+            }
+            if (inserted > 0 && packet.requestId != TransitPacket.NO_REQUEST
+                    && level.getBlockEntity(lastNode) instanceof NetworkInterfaceBlockEntity requester) {
+                requester.host().onDelivered(level, packet.requestId, packet.stack, inserted, packet.replyTo);
             }
             packet.stack.shrink(inserted);
         }

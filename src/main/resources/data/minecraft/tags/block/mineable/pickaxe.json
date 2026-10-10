@@ -3,6 +3,7 @@
   "values": [
     "loginetwork:copper_cable",
     "loginetwork:network_interface",
-    "loginetwork:dhcp_server"
+    "loginetwork:dhcp_server",
+    "loginetwork:access_switch"
   ]
 }

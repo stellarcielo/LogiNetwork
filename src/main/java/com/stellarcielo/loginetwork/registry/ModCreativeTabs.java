@@ -21,6 +21,7 @@ public final class ModCreativeTabs {
                 output.accept(ModItems.COPPER_CABLE.get());
                 output.accept(ModItems.NETWORK_INTERFACE.get());
                 output.accept(ModItems.DHCP_SERVER.get());
+                output.accept(ModItems.ACCESS_SWITCH.get());
             }).build());
 
     private ModCreativeTabs() {}

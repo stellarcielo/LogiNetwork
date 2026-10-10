@@ -2,16 +2,20 @@ package com.stellarcielo.loginetwork.network.payload;
 
 import java.util.Optional;
 
+import org.jspecify.annotations.Nullable;
+
 import com.stellarcielo.loginetwork.address.Ipv4Address;
 import com.stellarcielo.loginetwork.address.Ipv4Interface;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
 import com.stellarcielo.loginetwork.block.entity.DhcpServerBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
+import com.stellarcielo.loginetwork.menu.StockKeeperMenu;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.SimpleMenuProvider;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
@@ -38,6 +42,7 @@ public final class ServerPayloadHandlers {
             staticConfig = parsed.get();
         }
         blockEntity.configure(payload.dhcp(), staticConfig);
+        blockEntity.host().setSupply(payload.supply());
 
         ServerLevel level = player.level();
         BlockState state = level.getBlockState(payload.pos());
@@ -65,7 +70,15 @@ public final class ServerPayloadHandlers {
         blockEntity.configure(start.get(), end.get(), payload.prefixLength());
     }
 
-    private static BlockEntity reachableBlockEntity(ServerPlayer player, BlockPos pos) {
+    public static void openStockKeeper(OpenStockKeeperPayload payload, IPayloadContext context) {
+        if (context.player() instanceof ServerPlayer player
+                && reachableBlockEntity(player, payload.pos()) instanceof NetworkInterfaceBlockEntity blockEntity) {
+            player.openMenu(new SimpleMenuProvider((containerId, inventory, p) -> new StockKeeperMenu(containerId, inventory, blockEntity),
+                    Component.translatable("gui.loginetwork.stock_keeper.title")), payload.pos());
+        }
+    }
+
+    private static @Nullable BlockEntity reachableBlockEntity(ServerPlayer player, BlockPos pos) {
         ServerLevel level = player.level();
         if (!level.isLoaded(pos) || !player.isWithinBlockInteractionRange(pos, 1.0)) {
             return null;

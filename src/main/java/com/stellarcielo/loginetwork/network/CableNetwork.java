@@ -7,6 +7,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.stellarcielo.loginetwork.block.AccessSwitchBlock;
 import com.stellarcielo.loginetwork.block.CableBlock;
 import com.stellarcielo.loginetwork.block.DhcpServerBlock;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
@@ -18,8 +19,8 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.capabilities.Capabilities;
 
 // Breadth-first view of a cable network as seen from one node. Built on topology change, then reused.
-// Cables relay between all their connections. Interfaces and DHCP servers are leaves: they are reached
-// but never relay, except when the search starts from them.
+// Cables and switches relay between all their connections. Interfaces and DHCP servers are leaves: they
+// are reached but never relay, except when the search starts from them.
 public final class CableNetwork {
     // A node side that faces an inventory: a cable's inventory connection or an interface's front.
     public record Endpoint(BlockPos nodePos, Direction side, boolean extract) {
@@ -80,6 +81,8 @@ public final class CableNetwork {
                 if (isOrigin) {
                     visitAttachedCables(level, parents, queue, pos);
                 }
+            } else if (state.getBlock() instanceof AccessSwitchBlock) {
+                visitAttachedCables(level, parents, queue, pos);
             } else if (state.getBlock() instanceof DhcpServerBlock) {
                 dhcpServers.add(pos.immutable());
                 if (isOrigin) {
@@ -96,7 +99,7 @@ public final class CableNetwork {
         }
     }
 
-    // Leaf nodes have no connection state of their own; a cable counts as attached when it connects towards them.
+    // Non-cable nodes have no connection state of their own; a cable counts as attached when it connects towards them.
     private static void visitAttachedCables(ServerLevel level, Map<BlockPos, BlockPos> parents, ArrayDeque<BlockPos> queue, BlockPos pos) {
         for (Direction direction : Direction.values()) {
             BlockPos neighbour = pos.relative(direction);
@@ -108,6 +111,10 @@ public final class CableNetwork {
                 visit(parents, queue, neighbour, pos);
             }
         }
+    }
+
+    public boolean contains(BlockPos pos) {
+        return parents.containsKey(pos);
     }
 
     public List<Endpoint> endpoints() {

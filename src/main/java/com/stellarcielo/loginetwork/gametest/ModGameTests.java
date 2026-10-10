@@ -6,6 +6,7 @@ import com.stellarcielo.loginetwork.LogiNetwork;
 import com.stellarcielo.loginetwork.address.Ipv4Interface;
 import com.stellarcielo.loginetwork.block.CableBlock;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
+import com.stellarcielo.loginetwork.block.entity.AccessSwitchBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.DhcpServerBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.InterfaceStatus;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
@@ -22,6 +23,7 @@ import net.minecraft.gametest.framework.TestData;
 import net.minecraft.gametest.framework.TestEnvironmentDefinition;
 import net.minecraft.resources.Identifier;
 import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
@@ -54,7 +56,27 @@ public final class ModGameTests {
     private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> TRANSFER_VIA_INTERFACES =
             TEST_FUNCTIONS.register("transfer_via_interfaces", () -> ModGameTests::transferViaInterfaces);
 
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> REQUEST_SEQUENCE_DELIVERS =
+            TEST_FUNCTIONS.register("request_sequence_delivers", () -> ModGameTests::requestSequenceDelivers);
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> REQUEST_SPLITS_BETWEEN_SUPPLIERS =
+            TEST_FUNCTIONS.register("request_splits_between_suppliers", () -> ModGameTests::requestSplitsBetweenSuppliers);
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> NO_DOUBLE_RESERVATION =
+            TEST_FUNCTIONS.register("no_double_reservation", () -> ModGameTests::noDoubleReservation);
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> TIMEOUT_REREQUESTS =
+            TEST_FUNCTIONS.register("timeout_rerequests", () -> ModGameTests::timeoutRerequests);
+
     private static final Identifier STRUCTURE = Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "empty_7x3x3");
+
+    // Protocol layout (7x3x5): requester chest/interface at x=0/1, cables at x=2 and x=4 with a switch at x=3,
+    // supplier 1 interface/chest at x=5/6, all on z=2; supplier 2 hangs off the x=2 cable towards the north.
+    private static final Identifier PROTOCOL_STRUCTURE = Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "empty_7x3x5");
+    private static final BlockPos REQUESTER_CHEST = new BlockPos(0, 1, 2);
+    private static final BlockPos REQUESTER = new BlockPos(1, 1, 2);
+    private static final BlockPos SWITCH = new BlockPos(3, 1, 2);
+    private static final BlockPos SUPPLIER_1 = new BlockPos(5, 1, 2);
+    private static final BlockPos SUPPLIER_1_CHEST = new BlockPos(6, 1, 2);
+    private static final BlockPos SUPPLIER_2 = new BlockPos(2, 1, 1);
+    private static final BlockPos SUPPLIER_2_CHEST = new BlockPos(2, 1, 0);
 
     private static final BlockPos CHEST_A = new BlockPos(0, 1, 1);
     private static final BlockPos CHEST_B = new BlockPos(6, 1, 1);
@@ -81,11 +103,20 @@ public final class ModGameTests {
         registerTest(event, environment, STATIC_CONFLICT_DETECTED, 200);
         registerTest(event, environment, DHCP_LEASE_RELEASED_ON_REMOVAL, 300);
         registerTest(event, environment, TRANSFER_VIA_INTERFACES, 200);
+        registerTest(event, environment, REQUEST_SEQUENCE_DELIVERS, 300, PROTOCOL_STRUCTURE);
+        registerTest(event, environment, REQUEST_SPLITS_BETWEEN_SUPPLIERS, 300, PROTOCOL_STRUCTURE);
+        registerTest(event, environment, NO_DOUBLE_RESERVATION, 400, PROTOCOL_STRUCTURE);
+        registerTest(event, environment, TIMEOUT_REREQUESTS, 800, PROTOCOL_STRUCTURE);
     }
 
     private static void registerTest(RegisterGameTestsEvent event, Holder<TestEnvironmentDefinition<?>> environment,
             DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> function, int maxTicks) {
-        TestData<Holder<TestEnvironmentDefinition<?>>> data = new TestData<>(environment, STRUCTURE, maxTicks, 0, true, Rotation.NONE, false, 1, 1, false, 0);
+        registerTest(event, environment, function, maxTicks, STRUCTURE);
+    }
+
+    private static void registerTest(RegisterGameTestsEvent event, Holder<TestEnvironmentDefinition<?>> environment,
+            DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> function, int maxTicks, Identifier structure) {
+        TestData<Holder<TestEnvironmentDefinition<?>>> data = new TestData<>(environment, structure, maxTicks, 0, true, Rotation.NONE, false, 1, 1, false, 0);
         event.registerTest(function.getId(), new FunctionGameTestInstance(function.getKey(), data));
     }
 
@@ -195,6 +226,99 @@ public final class ModGameTests {
 
     private static DhcpServerBlockEntity dhcpServer(GameTestHelper helper) {
         return helper.getBlockEntity(DHCP_SERVER, DhcpServerBlockEntity.class);
+    }
+
+    private static void requestSequenceDelivers(GameTestHelper helper) {
+        buildProtocolLine(helper, false);
+        keepStocked(helper, REQUESTER, Items.IRON_INGOT, 16);
+        chest(helper, SUPPLIER_1_CHEST).setItem(0, new ItemStack(Items.IRON_INGOT, 64));
+
+        helper.succeedWhen(() -> {
+            helper.assertValueEqual(chest(helper, REQUESTER_CHEST).countItem(Items.IRON_INGOT), 16, "iron at requester");
+            helper.assertValueEqual(chest(helper, SUPPLIER_1_CHEST).countItem(Items.IRON_INGOT), 48, "iron at supplier");
+            helper.assertTrue(networkInterface(helper, REQUESTER).host().requests().isEmpty(), "request should be complete");
+            helper.assertValueEqual(networkInterface(helper, SUPPLIER_1).host().shipmentCount(), 0, "shipments awaiting RECEIVED");
+            helper.assertValueEqual(accessSwitch(helper).macTableSize(), 2, "MACs learned by the switch");
+        });
+    }
+
+    private static void requestSplitsBetweenSuppliers(GameTestHelper helper) {
+        buildProtocolLine(helper, true);
+        keepStocked(helper, REQUESTER, Items.IRON_INGOT, 16);
+        chest(helper, SUPPLIER_1_CHEST).setItem(0, new ItemStack(Items.IRON_INGOT, 10));
+        chest(helper, SUPPLIER_2_CHEST).setItem(0, new ItemStack(Items.IRON_INGOT, 10));
+
+        helper.succeedWhen(() -> {
+            helper.assertValueEqual(chest(helper, REQUESTER_CHEST).countItem(Items.IRON_INGOT), 16, "iron at requester");
+            int left = chest(helper, SUPPLIER_1_CHEST).countItem(Items.IRON_INGOT) + chest(helper, SUPPLIER_2_CHEST).countItem(Items.IRON_INGOT);
+            helper.assertValueEqual(left, 4, "iron left at suppliers");
+        });
+    }
+
+    // Two requesters compete for one supplier's 12 items; together they must get exactly 12.
+    private static void noDoubleReservation(GameTestHelper helper) {
+        buildProtocolLine(helper, true);
+        keepStocked(helper, REQUESTER, Items.IRON_INGOT, 10);
+        keepStocked(helper, SUPPLIER_1, Items.IRON_INGOT, 10);
+        chest(helper, SUPPLIER_2_CHEST).setItem(0, new ItemStack(Items.IRON_INGOT, 12));
+
+        helper.succeedWhen(() -> {
+            int first = chest(helper, REQUESTER_CHEST).countItem(Items.IRON_INGOT);
+            int second = chest(helper, SUPPLIER_1_CHEST).countItem(Items.IRON_INGOT);
+            helper.assertValueEqual(chest(helper, SUPPLIER_2_CHEST).countItem(Items.IRON_INGOT), 0, "iron left at supplier");
+            helper.assertValueEqual(first + second, 12, "iron at requesters");
+            helper.assertTrue(first <= 10 && second <= 10, "no requester should exceed its target");
+        });
+    }
+
+    // The chosen supplier disappears after offering; the request times out and is served by the other one.
+    private static void timeoutRerequests(GameTestHelper helper) {
+        buildProtocolLine(helper, true);
+        keepStocked(helper, REQUESTER, Items.IRON_INGOT, 16);
+        chest(helper, SUPPLIER_1_CHEST).setItem(0, new ItemStack(Items.IRON_INGOT, 32));
+        chest(helper, SUPPLIER_2_CHEST).setItem(0, new ItemStack(Items.IRON_INGOT, 16));
+        BlockPos supplier1 = helper.absolutePos(SUPPLIER_1);
+
+        helper.startSequence()
+                .thenWaitUntil(() -> helper.assertTrue(networkInterface(helper, REQUESTER).host().requests().stream()
+                        .anyMatch(request -> request.isReservingFrom(supplier1)), "waiting for RESERVE to supplier 1"))
+                .thenExecute(() -> helper.destroyBlock(SUPPLIER_1))
+                .thenWaitUntil(() -> {
+                    helper.assertValueEqual(chest(helper, REQUESTER_CHEST).countItem(Items.IRON_INGOT), 16, "iron at requester");
+                    helper.assertValueEqual(chest(helper, SUPPLIER_2_CHEST).countItem(Items.IRON_INGOT), 0, "iron at supplier 2");
+                    helper.assertValueEqual(chest(helper, SUPPLIER_1_CHEST).countItem(Items.IRON_INGOT), 32, "iron at supplier 1");
+                })
+                .thenSucceed();
+    }
+
+    private static void buildProtocolLine(GameTestHelper helper, boolean withSecondSupplier) {
+        BlockState interfaceState = ModBlocks.NETWORK_INTERFACE.get().defaultBlockState();
+        helper.setBlock(REQUESTER_CHEST, Blocks.CHEST);
+        helper.setBlock(SUPPLIER_1_CHEST, Blocks.CHEST);
+        helper.setBlock(REQUESTER, interfaceState.setValue(NetworkInterfaceBlock.FACING, Direction.WEST));
+        helper.setBlock(SUPPLIER_1, interfaceState.setValue(NetworkInterfaceBlock.FACING, Direction.EAST));
+        helper.setBlock(SWITCH, ModBlocks.ACCESS_SWITCH.get());
+        setStatic(helper, REQUESTER, "10.0.0.1/24");
+        setStatic(helper, SUPPLIER_1, "10.0.0.2/24");
+        if (withSecondSupplier) {
+            helper.setBlock(SUPPLIER_2_CHEST, Blocks.CHEST);
+            helper.setBlock(SUPPLIER_2, interfaceState.setValue(NetworkInterfaceBlock.FACING, Direction.NORTH));
+            setStatic(helper, SUPPLIER_2, "10.0.0.3/24");
+        }
+        placeCable(helper, new BlockPos(2, 1, 2));
+        placeCable(helper, new BlockPos(4, 1, 2));
+    }
+
+    private static void setStatic(GameTestHelper helper, BlockPos pos, String address) {
+        networkInterface(helper, pos).configure(false, Ipv4Interface.parse(address).orElseThrow());
+    }
+
+    private static void keepStocked(GameTestHelper helper, BlockPos interfacePos, Item item, int target) {
+        networkInterface(helper, interfacePos).host().setFilter(0, new ItemStack(item), target);
+    }
+
+    private static AccessSwitchBlockEntity accessSwitch(GameTestHelper helper) {
+        return helper.getBlockEntity(SWITCH, AccessSwitchBlockEntity.class);
     }
 
     // Chest A -> five cables -> chest B, with the first cable extracting from chest A.

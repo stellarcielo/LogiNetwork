@@ -1,6 +1,7 @@
 package com.stellarcielo.loginetwork.registry;
 
 import com.stellarcielo.loginetwork.LogiNetwork;
+import com.stellarcielo.loginetwork.block.AccessSwitchBlock;
 import com.stellarcielo.loginetwork.block.CableBlock;
 import com.stellarcielo.loginetwork.block.DhcpServerBlock;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
@@ -21,6 +22,9 @@ public final class ModBlocks {
             p -> p.mapColor(MapColor.COLOR_ORANGE).strength(1.5f).sound(SoundType.COPPER));
 
     public static final DeferredBlock<DhcpServerBlock> DHCP_SERVER = BLOCKS.registerBlock("dhcp_server", DhcpServerBlock::new,
+            p -> p.mapColor(MapColor.COLOR_ORANGE).strength(1.5f).sound(SoundType.COPPER));
+
+    public static final DeferredBlock<AccessSwitchBlock> ACCESS_SWITCH = BLOCKS.registerBlock("access_switch", AccessSwitchBlock::new,
             p -> p.mapColor(MapColor.COLOR_ORANGE).strength(1.5f).sound(SoundType.COPPER));
 
     private ModBlocks() {}

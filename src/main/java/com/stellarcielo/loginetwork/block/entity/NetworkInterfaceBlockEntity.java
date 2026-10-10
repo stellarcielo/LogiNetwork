@@ -1,5 +1,7 @@
 package com.stellarcielo.loginetwork.block.entity;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 
 import org.jspecify.annotations.Nullable;
@@ -9,10 +11,12 @@ import com.stellarcielo.loginetwork.address.MacAddress;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
 import com.stellarcielo.loginetwork.network.CableNetwork;
 import com.stellarcielo.loginetwork.network.NetworkManager;
+import com.stellarcielo.loginetwork.network.host.HostAgent;
 import com.stellarcielo.loginetwork.network.payload.OpenInterfaceScreenPayload;
 import com.stellarcielo.loginetwork.registry.ModBlockEntities;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.RandomSource;
@@ -21,7 +25,10 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.storage.ValueInput;
 import net.minecraft.world.level.storage.ValueOutput;
+import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.network.PacketDistributor;
+import net.neoforged.neoforge.transfer.ResourceHandler;
+import net.neoforged.neoforge.transfer.item.ItemResource;
 
 // Host identity: MAC, address configuration and the address currently in use.
 // Every CHECK_INTERVAL ticks it renews its DHCP lease (or runs DISCOVER/OFFER/REQUEST/ACK) and checks for conflicts.
@@ -35,11 +42,27 @@ public class NetworkInterfaceBlockEntity extends BlockEntity {
     private @Nullable BlockPos leaseServer;
     private InterfaceStatus status = InterfaceStatus.UNASSIGNED;
     private int checkCooldown;
+    private final HostAgent host = new HostAgent(this);
 
     public NetworkInterfaceBlockEntity(BlockPos pos, BlockState state) {
         super(ModBlockEntities.NETWORK_INTERFACE.get(), pos, state);
         // Replaced by the saved value when loading an existing interface.
         this.mac = MacAddress.random(RandomSource.create());
+    }
+
+    public HostAgent host() {
+        return host;
+    }
+
+    // Hosts take part in the request protocol only with a working address.
+    public boolean hasUsableAddress() {
+        return status == InterfaceStatus.DHCP_BOUND || status == InterfaceStatus.STATIC;
+    }
+
+    public @Nullable ResourceHandler<ItemResource> frontInventory(ServerLevel level) {
+        Direction front = getBlockState().getValue(NetworkInterfaceBlock.FACING);
+        BlockPos inventoryPos = worldPosition.relative(front);
+        return level.isLoaded(inventoryPos) ? level.getCapability(Capabilities.Item.BLOCK, inventoryPos, front.getOpposite()) : null;
     }
 
     public MacAddress mac() {
@@ -70,11 +93,12 @@ public class NetworkInterfaceBlockEntity extends BlockEntity {
     }
 
     public static void serverTick(Level level, BlockPos pos, BlockState state, NetworkInterfaceBlockEntity blockEntity) {
-        if (blockEntity.checkCooldown-- > 0) {
-            return;
+        ServerLevel serverLevel = (ServerLevel) level;
+        if (blockEntity.checkCooldown-- <= 0) {
+            blockEntity.checkCooldown = CHECK_INTERVAL;
+            blockEntity.refresh(serverLevel);
         }
-        blockEntity.checkCooldown = CHECK_INTERVAL;
-        blockEntity.refresh((ServerLevel) level);
+        blockEntity.host.tick(serverLevel);
     }
 
     private void refresh(ServerLevel level) {
@@ -157,9 +181,13 @@ public class NetworkInterfaceBlockEntity extends BlockEntity {
     }
 
     public void openScreen(ServerPlayer player) {
+        List<OpenInterfaceScreenPayload.RequestView> requests = new ArrayList<>();
+        for (HostAgent.Request request : host.requests()) {
+            requests.add(new OpenInterfaceScreenPayload.RequestView(request.id(), request.item(), request.requested(), request.received(), request.inTransit()));
+        }
         PacketDistributor.sendToPlayer(player, new OpenInterfaceScreenPayload(worldPosition, mac.toString(), dhcp,
                 staticConfig == null ? "" : staticConfig.toString(), assigned == null ? "" : assigned.toString(),
-                status.ordinal(), getBlockState().getValue(NetworkInterfaceBlock.EXTRACT)));
+                status.ordinal(), getBlockState().getValue(NetworkInterfaceBlock.EXTRACT), host.supplies(), requests));
     }
 
     @Override
@@ -171,6 +199,7 @@ public class NetworkInterfaceBlockEntity extends BlockEntity {
         output.storeNullable("assigned", Ipv4Interface.CODEC, assigned);
         output.storeNullable("lease_server", BlockPos.CODEC, leaseServer);
         output.putInt("status", status.ordinal());
+        host.save(output);
     }
 
     @Override
@@ -182,5 +211,6 @@ public class NetworkInterfaceBlockEntity extends BlockEntity {
         assigned = input.read("assigned", Ipv4Interface.CODEC).orElse(null);
         leaseServer = input.read("lease_server", BlockPos.CODEC).orElse(null);
         status = InterfaceStatus.byOrdinal(input.getIntOr("status", 0));
+        host.load(input);
     }
 }

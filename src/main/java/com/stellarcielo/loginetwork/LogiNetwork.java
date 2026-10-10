@@ -9,6 +9,7 @@ import com.stellarcielo.loginetwork.registry.ModBlockEntities;
 import com.stellarcielo.loginetwork.registry.ModBlocks;
 import com.stellarcielo.loginetwork.registry.ModCreativeTabs;
 import com.stellarcielo.loginetwork.registry.ModItems;
+import com.stellarcielo.loginetwork.registry.ModMenus;
 
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
@@ -24,6 +25,7 @@ public class LogiNetwork {
         ModBlocks.register(modEventBus);
         ModItems.register(modEventBus);
         ModBlockEntities.register(modEventBus);
+        ModMenus.register(modEventBus);
         ModCreativeTabs.register(modEventBus);
         modEventBus.addListener(ModPayloads::register);
         ModGameTests.register(modEventBus);
