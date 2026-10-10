@@ -32,13 +32,13 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.event.ExtractLevelRenderStateEvent;
 import net.neoforged.neoforge.client.event.SubmitCustomGeometryEvent;
 
-// Draws what travels through cables: real items, and (when enabled) control messages as small glinting
+// Draws what travels through cables: real items, and (when enabled) control messages as glinting
 // tinted envelopes. Extracts render state per frame, then submits it as item geometry.
 public final class TransitItemRenderer {
     // Largest dimension of a drawn item, in blocks. Slightly thicker than the 6px cable so it stays visible.
     private static final float ITEM_SIZE = 0.5f;
-    // Control messages are drawn smaller so they never look like real items.
-    private static final float CONTROL_SIZE = 0.3f;
+    // Control messages poke out of the cable too; the tint and glint tell them apart from real items.
+    private static final float CONTROL_SIZE = 0.45f;
     private static final float SPIN_DEGREES_PER_TICK = 4.0f;
 
     private record TransitRenderState(Vec3 pos, ItemStackRenderState item, int light, float spin, float size) {}
