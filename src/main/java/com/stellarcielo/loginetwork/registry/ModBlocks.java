@@ -2,6 +2,8 @@ package com.stellarcielo.loginetwork.registry;
 
 import com.stellarcielo.loginetwork.LogiNetwork;
 import com.stellarcielo.loginetwork.block.CableBlock;
+import com.stellarcielo.loginetwork.block.DhcpServerBlock;
+import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
 
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.material.MapColor;
@@ -14,6 +16,12 @@ public final class ModBlocks {
 
     public static final DeferredBlock<CableBlock> COPPER_CABLE = BLOCKS.registerBlock("copper_cable", CableBlock::new,
             p -> p.mapColor(MapColor.COLOR_ORANGE).strength(0.5f).sound(SoundType.COPPER).noOcclusion());
+
+    public static final DeferredBlock<NetworkInterfaceBlock> NETWORK_INTERFACE = BLOCKS.registerBlock("network_interface", NetworkInterfaceBlock::new,
+            p -> p.mapColor(MapColor.COLOR_ORANGE).strength(1.5f).sound(SoundType.COPPER));
+
+    public static final DeferredBlock<DhcpServerBlock> DHCP_SERVER = BLOCKS.registerBlock("dhcp_server", DhcpServerBlock::new,
+            p -> p.mapColor(MapColor.COLOR_ORANGE).strength(1.5f).sound(SoundType.COPPER));
 
     private ModBlocks() {}
 

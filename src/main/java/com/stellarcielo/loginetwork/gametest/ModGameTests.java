@@ -3,11 +3,17 @@ package com.stellarcielo.loginetwork.gametest;
 import java.util.function.Consumer;
 
 import com.stellarcielo.loginetwork.LogiNetwork;
+import com.stellarcielo.loginetwork.address.Ipv4Interface;
 import com.stellarcielo.loginetwork.block.CableBlock;
+import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
+import com.stellarcielo.loginetwork.block.entity.DhcpServerBlockEntity;
+import com.stellarcielo.loginetwork.block.entity.InterfaceStatus;
+import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 import com.stellarcielo.loginetwork.network.NetworkManager;
 import com.stellarcielo.loginetwork.registry.ModBlocks;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.gametest.framework.FunctionGameTestInstance;
@@ -27,7 +33,7 @@ import net.neoforged.neoforge.event.RegisterGameTestsEvent;
 import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredRegister;
 
-// Server-side checks for cable connections and item transit. Run with `./gradlew runGameTestServer`.
+// Server-side checks for cable connections, item transit and addressing. Run with `./gradlew runGameTestServer`.
 // Layout (relative): chest A at x=0, cables at x=1..5, chest B at x=6, all at y=1, z=1.
 public final class ModGameTests {
     private static final DeferredRegister<Consumer<GameTestHelper>> TEST_FUNCTIONS = DeferredRegister.create(Registries.TEST_FUNCTION, LogiNetwork.MOD_ID);
@@ -39,12 +45,25 @@ public final class ModGameTests {
     private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> BROKEN_CABLE_KEEPS_ITEMS =
             TEST_FUNCTIONS.register("broken_cable_keeps_items", () -> ModGameTests::brokenCableKeepsItems);
 
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> DHCP_ASSIGNS_UNIQUE_ADDRESSES =
+            TEST_FUNCTIONS.register("dhcp_assigns_unique_addresses", () -> ModGameTests::dhcpAssignsUniqueAddresses);
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> STATIC_CONFLICT_DETECTED =
+            TEST_FUNCTIONS.register("static_conflict_detected", () -> ModGameTests::staticConflictDetected);
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> DHCP_LEASE_RELEASED_ON_REMOVAL =
+            TEST_FUNCTIONS.register("dhcp_lease_released_on_removal", () -> ModGameTests::dhcpLeaseReleasedOnRemoval);
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> TRANSFER_VIA_INTERFACES =
+            TEST_FUNCTIONS.register("transfer_via_interfaces", () -> ModGameTests::transferViaInterfaces);
+
     private static final Identifier STRUCTURE = Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "empty_7x3x3");
 
     private static final BlockPos CHEST_A = new BlockPos(0, 1, 1);
     private static final BlockPos CHEST_B = new BlockPos(6, 1, 1);
     private static final int FIRST_CABLE_X = 1;
     private static final int LAST_CABLE_X = 5;
+    // Interface layout: interfaces at x=1 and x=5 facing outwards, cables at x=2..4, DHCP server beside the middle cable.
+    private static final BlockPos INTERFACE_A = new BlockPos(1, 1, 1);
+    private static final BlockPos INTERFACE_B = new BlockPos(5, 1, 1);
+    private static final BlockPos DHCP_SERVER = new BlockPos(3, 1, 0);
 
     private ModGameTests() {}
 
@@ -58,6 +77,10 @@ public final class ModGameTests {
         registerTest(event, environment, CABLE_CONNECTIONS, 20);
         registerTest(event, environment, TRANSFER_BETWEEN_CHESTS, 200);
         registerTest(event, environment, BROKEN_CABLE_KEEPS_ITEMS, 200);
+        registerTest(event, environment, DHCP_ASSIGNS_UNIQUE_ADDRESSES, 200);
+        registerTest(event, environment, STATIC_CONFLICT_DETECTED, 200);
+        registerTest(event, environment, DHCP_LEASE_RELEASED_ON_REMOVAL, 300);
+        registerTest(event, environment, TRANSFER_VIA_INTERFACES, 200);
     }
 
     private static void registerTest(RegisterGameTestsEvent event, Holder<TestEnvironmentDefinition<?>> environment,
@@ -106,6 +129,72 @@ public final class ModGameTests {
                     helper.assertValueEqual(total, 8, "iron in chests and on the ground");
                 })
                 .thenSucceed();
+    }
+
+    private static void dhcpAssignsUniqueAddresses(GameTestHelper helper) {
+        buildInterfaceLine(helper, true);
+        helper.succeedWhen(() -> {
+            NetworkInterfaceBlockEntity a = networkInterface(helper, INTERFACE_A);
+            NetworkInterfaceBlockEntity b = networkInterface(helper, INTERFACE_B);
+            helper.assertValueEqual(a.status(), InterfaceStatus.DHCP_BOUND, "interface A status");
+            helper.assertValueEqual(b.status(), InterfaceStatus.DHCP_BOUND, "interface B status");
+            helper.assertTrue(!a.assigned().address().equals(b.assigned().address()), "addresses should differ");
+            helper.assertValueEqual(a.assigned().prefixLength(), DhcpServerBlockEntity.DEFAULT_PREFIX_LENGTH, "prefix length");
+            helper.assertValueEqual(dhcpServer(helper).leases().size(), 2, "lease count");
+        });
+    }
+
+    private static void staticConflictDetected(GameTestHelper helper) {
+        buildInterfaceLine(helper, false);
+        Ipv4Interface address = Ipv4Interface.parse("10.0.0.5/24").orElseThrow();
+        networkInterface(helper, INTERFACE_A).configure(false, address);
+        networkInterface(helper, INTERFACE_B).configure(false, address);
+        helper.succeedWhen(() -> {
+            helper.assertValueEqual(networkInterface(helper, INTERFACE_A).status(), InterfaceStatus.CONFLICT, "interface A status");
+            helper.assertValueEqual(networkInterface(helper, INTERFACE_B).status(), InterfaceStatus.CONFLICT, "interface B status");
+        });
+    }
+
+    private static void dhcpLeaseReleasedOnRemoval(GameTestHelper helper) {
+        buildInterfaceLine(helper, true);
+        helper.startSequence()
+                .thenWaitUntil(() -> helper.assertValueEqual(dhcpServer(helper).leases().size(), 2, "lease count"))
+                .thenExecute(() -> helper.destroyBlock(INTERFACE_A))
+                .thenWaitUntil(() -> helper.assertValueEqual(dhcpServer(helper).leases().size(), 1, "lease count after removal"))
+                .thenSucceed();
+    }
+
+    private static void transferViaInterfaces(GameTestHelper helper) {
+        helper.setBlock(CHEST_A, Blocks.CHEST);
+        helper.setBlock(CHEST_B, Blocks.CHEST);
+        buildInterfaceLine(helper, false);
+        helper.setBlock(INTERFACE_A, helper.getBlockState(INTERFACE_A).setValue(NetworkInterfaceBlock.EXTRACT, true));
+        chest(helper, CHEST_A).setItem(0, new ItemStack(Items.IRON_INGOT, 8));
+
+        helper.succeedWhen(() -> {
+            helper.assertValueEqual(chest(helper, CHEST_B).countItem(Items.IRON_INGOT), 8, "iron in chest B");
+            helper.assertValueEqual(chest(helper, CHEST_A).countItem(Items.IRON_INGOT), 0, "iron in chest A");
+        });
+    }
+
+    private static void buildInterfaceLine(GameTestHelper helper, boolean withDhcp) {
+        BlockState interfaceState = ModBlocks.NETWORK_INTERFACE.get().defaultBlockState();
+        helper.setBlock(INTERFACE_A, interfaceState.setValue(NetworkInterfaceBlock.FACING, Direction.WEST));
+        helper.setBlock(INTERFACE_B, interfaceState.setValue(NetworkInterfaceBlock.FACING, Direction.EAST));
+        if (withDhcp) {
+            helper.setBlock(DHCP_SERVER, ModBlocks.DHCP_SERVER.get());
+        }
+        for (int x = 2; x <= 4; x++) {
+            placeCable(helper, new BlockPos(x, 1, 1));
+        }
+    }
+
+    private static NetworkInterfaceBlockEntity networkInterface(GameTestHelper helper, BlockPos pos) {
+        return helper.getBlockEntity(pos, NetworkInterfaceBlockEntity.class);
+    }
+
+    private static DhcpServerBlockEntity dhcpServer(GameTestHelper helper) {
+        return helper.getBlockEntity(DHCP_SERVER, DhcpServerBlockEntity.class);
     }
 
     // Chest A -> five cables -> chest B, with the first cable extracting from chest A.

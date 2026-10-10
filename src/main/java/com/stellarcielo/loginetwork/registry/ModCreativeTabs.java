@@ -19,6 +19,8 @@ public final class ModCreativeTabs {
             .icon(() -> ModItems.COPPER_CABLE.get().getDefaultInstance())
             .displayItems((parameters, output) -> {
                 output.accept(ModItems.COPPER_CABLE.get());
+                output.accept(ModItems.NETWORK_INTERFACE.get());
+                output.accept(ModItems.DHCP_SERVER.get());
             }).build());
 
     private ModCreativeTabs() {}

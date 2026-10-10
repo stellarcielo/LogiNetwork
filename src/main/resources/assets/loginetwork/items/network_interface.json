@@ -1,0 +1,6 @@
+{
+  "model": {
+    "type": "minecraft:model",
+    "model": "loginetwork:block/network_interface"
+  }
+}

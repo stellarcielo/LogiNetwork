@@ -13,7 +13,6 @@ import org.jspecify.annotations.Nullable;
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
 import com.stellarcielo.loginetwork.LogiNetwork;
-import com.stellarcielo.loginetwork.block.CableBlock;
 import com.stellarcielo.loginetwork.network.payload.TransitHopPayload;
 import com.stellarcielo.loginetwork.network.payload.TransitRemovePayload;
 
@@ -47,7 +46,8 @@ public final class NetworkManager extends SavedData {
     private static final Codec<NetworkManager> CODEC = RecordCodecBuilder.create(instance -> instance.group(
             Codec.LONG.fieldOf("next_id").forGetter(m -> m.nextId),
             TransitPacket.CODEC.listOf().fieldOf("packets").forGetter(m -> m.packets),
-            BlockPos.CODEC.listOf().fieldOf("extract_cables").forGetter(m -> List.copyOf(m.extractCables))
+            // Saved under its phase 3 name so existing worlds keep their extract settings.
+            BlockPos.CODEC.listOf().fieldOf("extract_cables").forGetter(m -> List.copyOf(m.extractNodes))
     ).apply(instance, NetworkManager::new));
 
     public static final SavedDataType<NetworkManager> TYPE = new SavedDataType<>(
@@ -55,7 +55,8 @@ public final class NetworkManager extends SavedData {
 
     private long nextId;
     private final List<TransitPacket> packets;
-    private final Set<BlockPos> extractCables;
+    // Nodes with at least one extracting side.
+    private final Set<BlockPos> extractNodes;
     // Route cache keyed by origin cable; cleared whenever the topology changes.
     private final Map<BlockPos, CableNetwork> networkCache = new HashMap<>();
 
@@ -63,10 +64,10 @@ public final class NetworkManager extends SavedData {
         this(0L, List.of(), List.of());
     }
 
-    private NetworkManager(long nextId, List<TransitPacket> packets, List<BlockPos> extractCables) {
+    private NetworkManager(long nextId, List<TransitPacket> packets, List<BlockPos> extractNodes) {
         this.nextId = nextId;
         this.packets = new ArrayList<>(packets);
-        this.extractCables = new HashSet<>(extractCables);
+        this.extractNodes = new HashSet<>(extractNodes);
     }
 
     public static NetworkManager get(ServerLevel level) {
@@ -79,9 +80,10 @@ public final class NetworkManager extends SavedData {
 
     // ---- topology -------------------------------------------------------------------------------
 
-    public void onCableChanged(BlockPos pos, BlockState state) {
+    public void onNodeChanged(BlockPos pos, BlockState state) {
         networkCache.clear();
-        boolean changed = CableBlock.hasAnyExtract(state) ? extractCables.add(pos.immutable()) : extractCables.remove(pos);
+        boolean extracts = !NetworkNodes.extractSides(state).isEmpty();
+        boolean changed = extracts ? extractNodes.add(pos.immutable()) : extractNodes.remove(pos);
         if (changed) {
             setDirty();
         }
@@ -92,14 +94,14 @@ public final class NetworkManager extends SavedData {
         networkCache.clear();
     }
 
-    public void onCableRemoved(BlockPos pos) {
+    public void onNodeRemoved(BlockPos pos) {
         networkCache.clear();
-        if (extractCables.remove(pos)) {
+        if (extractNodes.remove(pos)) {
             setDirty();
         }
     }
 
-    private CableNetwork network(ServerLevel level, BlockPos origin) {
+    public CableNetwork network(ServerLevel level, BlockPos origin) {
         return networkCache.computeIfAbsent(origin.immutable(), o -> CableNetwork.explore(level, o));
     }
 
@@ -116,33 +118,31 @@ public final class NetworkManager extends SavedData {
     }
 
     private void extractAll(ServerLevel level, long gameTime) {
-        Iterator<BlockPos> it = extractCables.iterator();
+        Iterator<BlockPos> it = extractNodes.iterator();
         while (it.hasNext()) {
-            BlockPos cablePos = it.next();
-            if (!level.isLoaded(cablePos)) {
+            BlockPos nodePos = it.next();
+            if (!level.isLoaded(nodePos)) {
                 continue;
             }
-            BlockState state = level.getBlockState(cablePos);
-            if (!CableBlock.isCable(state) || !CableBlock.hasAnyExtract(state)) {
+            List<Direction> sides = NetworkNodes.extractSides(level.getBlockState(nodePos));
+            if (sides.isEmpty()) {
                 it.remove();
                 setDirty();
                 continue;
             }
-            for (Direction side : Direction.values()) {
-                if (state.getValue(CableBlock.EXTRACT_BY_DIRECTION.get(side))) {
-                    extractFrom(level, cablePos, side, gameTime);
-                }
+            for (Direction side : sides) {
+                extractFrom(level, nodePos, side, gameTime);
             }
         }
     }
 
-    private void extractFrom(ServerLevel level, BlockPos cablePos, Direction side, long gameTime) {
-        BlockPos inventoryPos = cablePos.relative(side);
+    private void extractFrom(ServerLevel level, BlockPos nodePos, Direction side, long gameTime) {
+        BlockPos inventoryPos = nodePos.relative(side);
         ResourceHandler<ItemResource> source = itemHandler(level, inventoryPos, side.getOpposite());
         if (source == null) {
             return;
         }
-        CableNetwork network = network(level, cablePos);
+        CableNetwork network = network(level, nodePos);
         for (int slot = 0; slot < source.size(); slot++) {
             ItemResource resource = source.getResource(slot);
             if (resource.isEmpty()) {
@@ -163,7 +163,7 @@ public final class NetworkManager extends SavedData {
             }
             List<BlockPos> nodes = new ArrayList<>();
             nodes.add(inventoryPos);
-            nodes.addAll(network.pathTo(destination.endpoint.cablePos()));
+            nodes.addAll(network.pathTo(destination.endpoint.nodePos()));
             nodes.add(destination.endpoint.inventoryPos());
             TransitPacket packet = new TransitPacket(nextId++, resource.toStack(extracted), nodes, true, 0, gameTime, 0, inventoryPos, false, 0);
             startHop(level, packet, gameTime);
@@ -196,7 +196,7 @@ public final class NetworkManager extends SavedData {
             return false;
         }
         if (isBroken(level, packet, next + 1)) {
-            // The route ahead is gone; find another way from the cable we are standing on.
+            // The route ahead is gone; find another way from the node we are standing on.
             return reroute(level, packet, packet.nodes.get(next), null, gameTime);
         }
         packet.hop = next;
@@ -206,13 +206,13 @@ public final class NetworkManager extends SavedData {
     }
 
     private static boolean isBroken(ServerLevel level, TransitPacket packet, int index) {
-        return !packet.isInventoryNode(index) && !CableBlock.isCable(level.getBlockState(packet.nodes.get(index)));
+        return !packet.isInventoryNode(index) && !NetworkNodes.isNode(level.getBlockState(packet.nodes.get(index)));
     }
 
     private boolean deliver(ServerLevel level, TransitPacket packet, long gameTime) {
         BlockPos inventoryPos = packet.destination();
-        BlockPos lastCable = packet.nodes.get(packet.lastIndex() - 1);
-        Direction side = directionBetween(inventoryPos, lastCable);
+        BlockPos lastNode = packet.nodes.get(packet.lastIndex() - 1);
+        Direction side = directionBetween(inventoryPos, lastNode);
         ResourceHandler<ItemResource> target = itemHandler(level, inventoryPos, side);
         if (target != null) {
             ItemResource resource = ItemResource.of(packet.stack);
@@ -228,18 +228,18 @@ public final class NetworkManager extends SavedData {
             return true;
         }
         // Leftovers come back out of the inventory face and look for somewhere else to go.
-        return reroute(level, packet, lastCable, inventoryPos, gameTime);
+        return reroute(level, packet, lastNode, inventoryPos, gameTime);
     }
 
     // Order: another destination, then back to the source, then drop on the spot.
-    private boolean reroute(ServerLevel level, TransitPacket packet, BlockPos fromCable, @Nullable BlockPos comingOutOf, long gameTime) {
+    private boolean reroute(ServerLevel level, TransitPacket packet, BlockPos fromNode, @Nullable BlockPos comingOutOf, long gameTime) {
         Vec3 here = packet.currentPosition(gameTime);
-        if (packet.reroutes >= MAX_REROUTES || !CableBlock.isCable(level.getBlockState(fromCable))) {
+        if (packet.reroutes >= MAX_REROUTES || !NetworkNodes.isNode(level.getBlockState(fromNode))) {
             drop(level, packet, here);
             return true;
         }
         packet.reroutes++;
-        CableNetwork network = network(level, fromCable);
+        CableNetwork network = network(level, fromNode);
         ItemResource resource = ItemResource.of(packet.stack);
         Destination destination = null;
         if (!packet.returning) {
@@ -257,7 +257,7 @@ public final class NetworkManager extends SavedData {
         if (comingOutOf != null) {
             nodes.add(comingOutOf);
         }
-        nodes.addAll(network.pathTo(destination.endpoint.cablePos()));
+        nodes.addAll(network.pathTo(destination.endpoint.nodePos()));
         nodes.add(destination.endpoint.inventoryPos());
         packet.setRoute(nodes, comingOutOf != null);
         startHop(level, packet, gameTime);

@@ -5,6 +5,7 @@ import java.util.Map;
 import com.google.common.collect.ImmutableMap;
 import com.mojang.serialization.MapCodec;
 import com.stellarcielo.loginetwork.network.NetworkManager;
+import com.stellarcielo.loginetwork.network.NetworkNodes;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -26,7 +27,7 @@ import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.capabilities.Capabilities;
 
-// Pipe-style cable (link). Connects to other cables and to any block exposing an item handler.
+// Pipe-style cable (link). Connects to other network nodes and to any block exposing an item handler.
 // A side facing an inventory can be switched to extract mode (phase 3 stand-in until network interfaces exist).
 public class CableBlock extends PipeBlock {
     public static final MapCodec<CableBlock> CODEC = simpleCodec(CableBlock::new);
@@ -78,7 +79,7 @@ public class CableBlock extends PipeBlock {
         for (Direction direction : Direction.values()) {
             BlockPos neighbourPos = pos.relative(direction);
             BlockState neighbourState = level.getBlockState(neighbourPos);
-            state = applyConnection(state, direction, canConnectTo(level, neighbourPos, neighbourState, direction), isCable(neighbourState));
+            state = applyConnection(state, direction, canConnectTo(level, neighbourPos, neighbourState, direction), NetworkNodes.isNode(neighbourState));
         }
         return state;
     }
@@ -87,11 +88,11 @@ public class CableBlock extends PipeBlock {
     protected BlockState updateShape(BlockState state, LevelReader level, ScheduledTickAccess ticks, BlockPos pos,
             Direction directionToNeighbour, BlockPos neighbourPos, BlockState neighbourState, RandomSource random) {
         boolean connect = canConnectTo(level, neighbourPos, neighbourState, directionToNeighbour);
-        return applyConnection(state, directionToNeighbour, connect, isCable(neighbourState));
+        return applyConnection(state, directionToNeighbour, connect, NetworkNodes.isNode(neighbourState));
     }
 
-    private static BlockState applyConnection(BlockState state, Direction direction, boolean connect, boolean neighbourIsCable) {
-        boolean extract = state.getValue(EXTRACT_BY_DIRECTION.get(direction)) && connect && !neighbourIsCable;
+    private static BlockState applyConnection(BlockState state, Direction direction, boolean connect, boolean neighbourIsNode) {
+        boolean extract = state.getValue(EXTRACT_BY_DIRECTION.get(direction)) && connect && !neighbourIsNode;
         return state.setValue(PROPERTY_BY_DIRECTION.get(direction), connect).setValue(EXTRACT_BY_DIRECTION.get(direction), extract);
     }
 
@@ -101,7 +102,7 @@ public class CableBlock extends PipeBlock {
             return InteractionResult.PASS;
         }
         Direction side = clickedSide(pos, hitResult);
-        if (!state.getValue(PROPERTY_BY_DIRECTION.get(side)) || isCable(level.getBlockState(pos.relative(side)))) {
+        if (!state.getValue(PROPERTY_BY_DIRECTION.get(side)) || NetworkNodes.isNode(level.getBlockState(pos.relative(side)))) {
             return InteractionResult.PASS;
         }
         if (!level.isClientSide()) {
@@ -124,31 +125,25 @@ public class CableBlock extends PipeBlock {
     @Override
     protected void onPlace(BlockState state, Level level, BlockPos pos, BlockState oldState, boolean movedByPiston) {
         if (level instanceof ServerLevel serverLevel) {
-            NetworkManager.get(serverLevel).onCableChanged(pos, state);
+            NetworkManager.get(serverLevel).onNodeChanged(pos, state);
         }
     }
 
     @Override
     protected void affectNeighborsAfterRemoval(BlockState state, ServerLevel level, BlockPos pos, boolean movedByPiston) {
-        NetworkManager.get(level).onCableRemoved(pos);
+        NetworkManager.get(level).onNodeRemoved(pos);
     }
 
     public static boolean isCable(BlockState state) {
         return state.getBlock() instanceof CableBlock;
     }
 
-    public static boolean hasAnyExtract(BlockState state) {
-        for (BooleanProperty property : EXTRACT_BY_DIRECTION.values()) {
-            if (state.getValue(property)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private static boolean canConnectTo(LevelReader level, BlockPos neighbourPos, BlockState neighbourState, Direction directionToNeighbour) {
-        if (isCable(neighbourState)) {
+        if (isCable(neighbourState) || neighbourState.getBlock() instanceof DhcpServerBlock) {
             return true;
+        }
+        if (neighbourState.getBlock() instanceof NetworkInterfaceBlock) {
+            return NetworkInterfaceBlock.acceptsCableFrom(neighbourState, directionToNeighbour.getOpposite());
         }
         // Capability lookup needs a full Level; other readers (e.g. worldgen regions) never connect to inventories.
         if (neighbourState.isAir() || !(level instanceof Level fullLevel)) {
