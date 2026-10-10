@@ -38,7 +38,7 @@ public final class TransitItemRenderer {
     // Largest dimension of a drawn item, in blocks. Slightly thicker than the 6px cable so it stays visible.
     private static final float ITEM_SIZE = 0.5f;
     // Control messages poke out of the cable too; the tint and glint tell them apart from real items.
-    private static final float CONTROL_SIZE = 0.45f;
+    private static final float CONTROL_SIZE = 0.6f;
     private static final float SPIN_DEGREES_PER_TICK = 4.0f;
 
     private record TransitRenderState(Vec3 pos, ItemStackRenderState item, int light, float spin, float size) {}
