@@ -55,5 +55,6 @@
   "gui.loginetwork.switch.port.east": "東",
   "gui.loginetwork.switch.port.west": "西",
   "gui.loginetwork.switch.port.up": "上",
-  "gui.loginetwork.switch.port.down": "下"
+  "gui.loginetwork.switch.port.down": "下",
+  "item.loginetwork.control_packet": "制御パケット"
 }
