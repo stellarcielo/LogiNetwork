@@ -20,6 +20,7 @@ import com.stellarcielo.loginetwork.block.CableBlock;
 import com.stellarcielo.loginetwork.block.CableType;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
 import com.stellarcielo.loginetwork.block.RouterBlock;
+import com.stellarcielo.loginetwork.block.entity.RouterBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 import com.stellarcielo.loginetwork.network.control.ControlPlane;
 import com.stellarcielo.loginetwork.network.observe.PacketCapture;
@@ -246,9 +247,14 @@ public final class NetworkManager extends SavedData {
         return routeToInventory(level, fromInterface, destination) != null;
     }
 
-    // Path from a node to the inventory in front of the interface holding an address (inventory included).
     private @Nullable List<BlockPos> routeToInventory(ServerLevel level, BlockPos from, Ipv4Address destination) {
-        List<BlockPos> path = RoutingService.resolve(level, from, destination);
+        return routeToInventory(level, from, destination, RouterBlockEntity.NO_FLOW);
+    }
+
+    // Path from a node to the inventory in front of the interface holding an address (inventory included).
+    // flowKey spreads packets over equal-cost paths.
+    private @Nullable List<BlockPos> routeToInventory(ServerLevel level, BlockPos from, Ipv4Address destination, long flowKey) {
+        List<BlockPos> path = RoutingService.resolve(level, from, destination, flowKey);
         if (path == null || path.isEmpty()) {
             return null;
         }
@@ -269,11 +275,12 @@ public final class NetworkManager extends SavedData {
     public void ship(ServerLevel level, BlockPos fromInterface, Ipv4Address destination, ItemStack items, long requestId, @Nullable Ipv4Address supplier,
             int priority) {
         BlockPos supplierInventory = fromInterface.relative(level.getBlockState(fromInterface).getValue(NetworkInterfaceBlock.FACING));
-        List<BlockPos> route = routeToInventory(level, fromInterface, destination);
         long gameTime = level.getGameTime();
         int packetSize = Math.max(1, items.getMaxStackSize());
         while (!items.isEmpty()) {
             ItemStack part = items.split(packetSize);
+            // Each packet is its own flow, so equal-cost paths share the load packet by packet.
+            List<BlockPos> route = routeToInventory(level, fromInterface, destination, nextId);
             if (route == null) {
                 // The route vanished between RESERVE and shipping: put the items back, or drop them if they no longer fit.
                 Block.popResource(level, supplierInventory, returnToInventory(level, fromInterface, supplierInventory, part));
@@ -528,10 +535,10 @@ public final class NetworkManager extends SavedData {
         if (packet.requestId != TransitPacket.NO_REQUEST) {
             List<BlockPos> route = null;
             if (!packet.returning && comingOutOf == null && packet.destinationAddress != null) {
-                route = routeToInventory(level, fromNode, packet.destinationAddress);
+                route = routeToInventory(level, fromNode, packet.destinationAddress, packet.id);
             }
             if (route == null && packet.replyAddress != null) {
-                route = routeToInventory(level, fromNode, packet.replyAddress);
+                route = routeToInventory(level, fromNode, packet.replyAddress, packet.id);
                 packet.returning = route != null || packet.returning;
             }
             if (route != null) {

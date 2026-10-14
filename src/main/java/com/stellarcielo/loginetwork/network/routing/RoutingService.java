@@ -22,6 +22,11 @@ public final class RoutingService {
     private RoutingService() {}
 
     public static @Nullable List<BlockPos> resolve(ServerLevel level, BlockPos from, Ipv4Address destination) {
+        return resolve(level, from, destination, RouterBlockEntity.NO_FLOW);
+    }
+
+    // flowKey picks among equal-cost paths at each router (ECMP); NO_FLOW always takes the first.
+    public static @Nullable List<BlockPos> resolve(ServerLevel level, BlockPos from, Ipv4Address destination, long flowKey) {
         NetworkManager manager = NetworkManager.get(level);
         List<BlockPos> path = new ArrayList<>();
         BlockPos router;
@@ -59,7 +64,7 @@ public final class RoutingService {
             if (!(level.getBlockEntity(router) instanceof RouterBlockEntity current)) {
                 return null;
             }
-            RouteDecision decision = current.lookup(destination);
+            RouteDecision decision = current.lookup(destination, flowKey);
             if (decision == null) {
                 return null;
             }

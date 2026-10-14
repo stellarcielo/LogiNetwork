@@ -376,9 +376,17 @@ public class RouterBlockEntity extends BlockEntity implements ControlEndpoint {
         }
     }
 
-    // Directly attached hosts first, then static routes (longest prefix), then the longest matching prefix among
-    // other routers' hosts (/32) and port subnets, cheapest on ties. Returns null when there is no route.
     public @Nullable RouteDecision lookup(Ipv4Address destination) {
+        return lookup(destination, NO_FLOW);
+    }
+
+    // Flow key 0 always takes the first of several equal-cost paths (used by control messages).
+    public static final long NO_FLOW = 0L;
+
+    // Directly attached hosts first, then static routes (longest prefix), then the longest matching prefix among
+    // other routers' hosts (/32) and port subnets, cheapest on ties. Equal-cost paths are spread by flow key (ECMP).
+    // Returns null when there is no route.
+    public @Nullable RouteDecision lookup(Ipv4Address destination, long flowKey) {
         if (self == null) {
             return null;
         }
@@ -403,18 +411,24 @@ public class RouterBlockEntity extends BlockEntity implements ControlEndpoint {
         }
         for (Map.Entry<MacAddress, ShortestPaths.Path> entry : paths.entrySet()) {
             Lsa lsa = database.get(entry.getKey());
-            NeighbourInfo firstHop = neighbours.get(entry.getValue().firstHop());
-            if (lsa == null || firstHop == null) {
+            List<ShortestPaths.FirstHop> hops = entry.getValue().firstHops().stream().filter(hop -> neighbours.containsKey(hop.neighbour())).toList();
+            if (lsa == null || hops.isEmpty()) {
                 continue;
             }
             int prefix = matchLength(lsa, destination);
             int cost = entry.getValue().cost();
             if (prefix > bestPrefix || (prefix == bestPrefix && prefix >= 0 && best != null && cost < best.cost())) {
-                best = new RouteDecision.Forward(entry.getValue().firstPort(), firstHop.pos(), cost);
+                ShortestPaths.FirstHop hop = hops.get(flowKey == NO_FLOW ? 0 : Math.floorMod(spread(flowKey), hops.size()));
+                best = new RouteDecision.Forward(hop.port(), neighbours.get(hop.neighbour()).pos(), cost);
                 bestPrefix = prefix;
             }
         }
         return best;
+    }
+
+    // Mixes the flow key with our own ID so consecutive routers do not all make the same choice.
+    private int spread(long flowKey) {
+        return Long.hashCode((flowKey * 0x9E3779B97F4A7C15L) ^ routerId.bits());
     }
 
     private @Nullable RouteDecision lookupStatic(Ipv4Address destination) {
@@ -515,7 +529,7 @@ public class RouterBlockEntity extends BlockEntity implements ControlEndpoint {
             if (lsa == null) {
                 continue;
             }
-            String via = entry.getValue().firstHop().toString();
+            String via = String.join(", ", entry.getValue().firstHops().stream().map(hop -> hop.neighbour().toString()).distinct().toList());
             int cost = entry.getValue().cost();
             for (Lsa.HostRoute host : lsa.hosts()) {
                 routes.add(new OpenRouterScreenPayload.RouteView(host.address() + "/32", OpenRouterScreenPayload.KIND_LEARNED, via, cost));

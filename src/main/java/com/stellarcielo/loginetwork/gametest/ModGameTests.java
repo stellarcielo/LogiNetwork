@@ -107,6 +107,9 @@ public final class ModGameTests {
     private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> CAPTURE_RECORDS_TRAFFIC =
             TEST_FUNCTIONS.register("capture_records_traffic", () -> ModGameTests::captureRecordsTraffic);
 
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> ECMP_SPREADS_PACKETS =
+            TEST_FUNCTIONS.register("ecmp_spreads_packets", () -> ModGameTests::ecmpSpreadsPackets);
+
     private static final Identifier STRUCTURE = Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "empty_7x3x3");
 
     // Protocol layout (7x3x5): requester chest/interface at x=0/1, cables at x=2 and x=4 with a switch at x=3,
@@ -177,6 +180,7 @@ public final class ModGameTests {
         registerTest(event, environment, HIGH_PRIORITY_OVERTAKES, 1200, PROTOCOL_STRUCTURE);
         registerTest(event, environment, TRACEROUTE_LISTS_ROUTERS, 300, ROUTED_STRUCTURE);
         registerTest(event, environment, CAPTURE_RECORDS_TRAFFIC, 300, PROTOCOL_STRUCTURE);
+        registerTest(event, environment, ECMP_SPREADS_PACKETS, 600, ECMP_STRUCTURE);
     }
 
     private static void registerTest(RegisterGameTestsEvent event, Holder<TestEnvironmentDefinition<?>> environment,
@@ -585,6 +589,46 @@ public final class ModGameTests {
 
     private static boolean isCaptureOf(Component entry, String key) {
         return entry.getContents() instanceof TranslatableContents contents && contents.getKey().equals(key);
+    }
+
+    // Routed layout without the short link, in a 9x3x7 area (everything shifted to z+1), plus a second long link
+    // to the south that mirrors the northern one: two equal-cost paths between the routers.
+    private static final Identifier ECMP_STRUCTURE = Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "empty_9x3x7");
+
+    private static void ecmpSpreadsPackets(GameTestHelper helper) {
+        BlockPos shift = new BlockPos(0, 0, 1);
+        BlockState interfaceState = ModBlocks.NETWORK_INTERFACE.get().defaultBlockState();
+        helper.setBlock(ROUTED_REQUESTER_CHEST.offset(shift), Blocks.CHEST);
+        helper.setBlock(ROUTED_REQUESTER.offset(shift), interfaceState.setValue(NetworkInterfaceBlock.FACING, Direction.WEST));
+        helper.setBlock(ROUTED_SUPPLIER.offset(shift), interfaceState.setValue(NetworkInterfaceBlock.FACING, Direction.EAST));
+        helper.setBlock(ROUTER_1.offset(shift), ModBlocks.ROUTER.get());
+        helper.setBlock(ROUTER_2.offset(shift), ModBlocks.ROUTER.get());
+        networkInterface(helper, ROUTED_REQUESTER.offset(shift)).configure(false, new Ipv4Interface(ROUTED_REQUESTER_ADDRESS, 24));
+        networkInterface(helper, ROUTED_SUPPLIER.offset(shift)).configure(false, new Ipv4Interface(ROUTED_SUPPLIER_ADDRESS, 24));
+        List<BlockPos> cables = List.of(new BlockPos(2, 1, 4), new BlockPos(6, 1, 4),
+                new BlockPos(3, 1, 3), new BlockPos(3, 1, 2), new BlockPos(4, 1, 2), new BlockPos(5, 1, 2), new BlockPos(5, 1, 3),
+                new BlockPos(3, 1, 5), new BlockPos(3, 1, 6), new BlockPos(4, 1, 6), new BlockPos(5, 1, 6), new BlockPos(5, 1, 5));
+        cables.forEach(cable -> placeCable(helper, cable));
+        BlockPos supplier = helper.absolutePos(ROUTED_SUPPLIER.offset(shift));
+        BlockPos north = helper.absolutePos(new BlockPos(4, 1, 2));
+        BlockPos south = helper.absolutePos(new BlockPos(4, 1, 6));
+        NetworkManager manager = NetworkManager.get(helper.getLevel());
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    RouterBlockEntity router = helper.getBlockEntity(ROUTER_2.offset(shift), RouterBlockEntity.class);
+                    helper.assertTrue(router.paths().values().stream().anyMatch(path -> path.firstHops().size() == 2), "waiting for two equal-cost paths");
+                    helper.assertTrue(RoutingService.resolve(helper.getLevel(), supplier, ROUTED_REQUESTER_ADDRESS) != null, "waiting for a route");
+                })
+                .thenExecute(() -> manager.ship(helper.getLevel(), supplier, ROUTED_REQUESTER_ADDRESS, new ItemStack(Items.IRON_INGOT, 8 * 64), 1L,
+                        ROUTED_SUPPLIER_ADDRESS))
+                .thenExecute(() -> {
+                    long viaNorth = manager.packets().stream().filter(packet -> packet.nodes().contains(north)).count();
+                    long viaSouth = manager.packets().stream().filter(packet -> packet.nodes().contains(south)).count();
+                    helper.assertTrue(viaNorth > 0 && viaSouth > 0, "packets should use both paths (north " + viaNorth + ", south " + viaSouth + ")");
+                })
+                .thenWaitUntil(() -> helper.assertValueEqual(chest(helper, ROUTED_REQUESTER_CHEST.offset(shift)).countItem(Items.IRON_INGOT), 8 * 64,
+                        "iron at requester"))
+                .thenSucceed();
     }
 
     private static final BlockPos DISCARD_CHEST = new BlockPos(4, 1, 1);
