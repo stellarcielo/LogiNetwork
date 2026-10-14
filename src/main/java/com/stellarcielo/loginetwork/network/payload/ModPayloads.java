@@ -5,7 +5,7 @@ import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 
 // Client handlers for play-to-client payloads are attached in LogiNetworkClient.
 public final class ModPayloads {
-    private static final String PROTOCOL_VERSION = "6";
+    private static final String PROTOCOL_VERSION = "8";
 
     private ModPayloads() {}
 
@@ -24,6 +24,7 @@ public final class ModPayloads {
         registrar.playToClient(OpenTraceroutePayload.TYPE, OpenTraceroutePayload.STREAM_CODEC);
         registrar.playToClient(HighlightPathPayload.TYPE, HighlightPathPayload.STREAM_CODEC);
         registrar.playToServer(TraceroutePayload.TYPE, TraceroutePayload.STREAM_CODEC, ServerPayloadHandlers::traceroute);
+        registrar.playToServer(ConfigureSwitchPortPayload.TYPE, ConfigureSwitchPortPayload.STREAM_CODEC, ServerPayloadHandlers::configureSwitchPort);
         registrar.playToServer(ConfigureRouterPayload.TYPE, ConfigureRouterPayload.STREAM_CODEC, ServerPayloadHandlers::configureRouter);
     }
 }

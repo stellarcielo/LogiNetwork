@@ -43,7 +43,7 @@
   "gui.loginetwork.stock_keeper.hint_scroll": "Scroll to change (Shift: ±16)",
   "gui.loginetwork.stock_keeper.hint_clear": "Click with empty hand to clear",
   "gui.loginetwork.stock_keeper.hint_set": "Click with an item to keep it stocked",
-  "gui.loginetwork.switch.title": "Access Switch - MAC Address Table",
+  "gui.loginetwork.switch.title": "Access Switch",
   "gui.loginetwork.switch.mac": "MAC",
   "gui.loginetwork.switch.port": "Port",
   "gui.loginetwork.switch.age": "Age",
@@ -128,5 +128,14 @@
   "observe.loginetwork.trace.unreachable": "  No route",
   "observe.loginetwork.trace.hop": "  %s  %s  (cost %s)",
   "observe.loginetwork.trace.router": "router %s",
-  "observe.loginetwork.trace.need_interface": "Use on a network interface that has an address"
+  "observe.loginetwork.trace.need_interface": "Use on a network interface that has an address",
+  "gui.loginetwork.switch.tab.mac": "MAC table",
+  "gui.loginetwork.switch.tab.vlan": "VLAN",
+  "gui.loginetwork.switch.mode": "Mode",
+  "gui.loginetwork.switch.mode.access": "Access",
+  "gui.loginetwork.switch.mode.trunk": "Trunk",
+  "gui.loginetwork.switch.vlan": "VLAN",
+  "gui.loginetwork.switch.allowed": "allowed: %s",
+  "gui.loginetwork.switch.vlan_hint": "Access: VLAN ID (1-4094). Trunk: \"all\" or e.g. \"10,20-25\".",
+  "message.loginetwork.invalid_vlan": "Invalid VLAN setting: IDs are 1-4094, trunk lists look like \"all\" or \"10,20-25\""
 }

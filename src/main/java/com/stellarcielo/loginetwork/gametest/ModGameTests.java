@@ -1,6 +1,7 @@
 package com.stellarcielo.loginetwork.gametest;
 
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
 
@@ -16,6 +17,7 @@ import com.stellarcielo.loginetwork.block.entity.InterfaceStatus;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.RouterBlockEntity;
 import com.stellarcielo.loginetwork.network.NetworkManager;
+import com.stellarcielo.loginetwork.network.SwitchPort;
 import com.stellarcielo.loginetwork.network.TransitPacket;
 import com.stellarcielo.loginetwork.network.observe.Observation;
 import com.stellarcielo.loginetwork.network.routing.RoutingService;
@@ -110,6 +112,11 @@ public final class ModGameTests {
     private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> ECMP_SPREADS_PACKETS =
             TEST_FUNCTIONS.register("ecmp_spreads_packets", () -> ModGameTests::ecmpSpreadsPackets);
 
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> TRUNK_CARRIES_VLAN =
+            TEST_FUNCTIONS.register("trunk_carries_vlan", () -> ModGameTests::trunkCarriesVlan);
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> TRUNK_FILTERS_VLAN =
+            TEST_FUNCTIONS.register("trunk_filters_vlan", () -> ModGameTests::trunkFiltersVlan);
+
     private static final Identifier STRUCTURE = Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "empty_7x3x3");
 
     // Protocol layout (7x3x5): requester chest/interface at x=0/1, cables at x=2 and x=4 with a switch at x=3,
@@ -181,6 +188,8 @@ public final class ModGameTests {
         registerTest(event, environment, TRACEROUTE_LISTS_ROUTERS, 300, ROUTED_STRUCTURE);
         registerTest(event, environment, CAPTURE_RECORDS_TRAFFIC, 300, PROTOCOL_STRUCTURE);
         registerTest(event, environment, ECMP_SPREADS_PACKETS, 600, ECMP_STRUCTURE);
+        registerTest(event, environment, TRUNK_CARRIES_VLAN, 300, ROUTED_STRUCTURE);
+        registerTest(event, environment, TRUNK_FILTERS_VLAN, 300, ROUTED_STRUCTURE);
     }
 
     private static void registerTest(RegisterGameTestsEvent event, Holder<TestEnvironmentDefinition<?>> environment,
@@ -629,6 +638,55 @@ public final class ModGameTests {
                 .thenWaitUntil(() -> helper.assertValueEqual(chest(helper, ROUTED_REQUESTER_CHEST.offset(shift)).countItem(Items.IRON_INGOT), 8 * 64,
                         "iron at requester"))
                 .thenSucceed();
+    }
+
+    // VLAN layout (9x3x5, z=2): host A - access VLAN 10 on switch A - trunk - switch B - access VLAN 10 - DHCP server,
+    // and host C on switch B's northern port in VLAN 20.
+    private static final BlockPos VLAN_HOST_A = new BlockPos(1, 1, 2);
+    private static final BlockPos VLAN_SWITCH_A = new BlockPos(3, 1, 2);
+    private static final BlockPos VLAN_SWITCH_B = new BlockPos(5, 1, 2);
+    private static final BlockPos VLAN_DHCP = new BlockPos(7, 1, 2);
+    private static final BlockPos VLAN_HOST_C = new BlockPos(5, 1, 0);
+
+    private static void buildVlanNetwork(GameTestHelper helper, String trunkAllowed) {
+        helper.setBlock(VLAN_SWITCH_A, ModBlocks.ACCESS_SWITCH.get());
+        helper.setBlock(VLAN_SWITCH_B, ModBlocks.ACCESS_SWITCH.get());
+        AccessSwitchBlockEntity switchA = helper.getBlockEntity(VLAN_SWITCH_A, AccessSwitchBlockEntity.class);
+        AccessSwitchBlockEntity switchB = helper.getBlockEntity(VLAN_SWITCH_B, AccessSwitchBlockEntity.class);
+        Set<Integer> allowed = SwitchPort.parseAllowed(trunkAllowed).orElse(null);
+        switchA.setPort(Direction.WEST, new SwitchPort(false, 10, null));
+        switchA.setPort(Direction.EAST, new SwitchPort(true, SwitchPort.NATIVE_VLAN, allowed));
+        switchB.setPort(Direction.WEST, new SwitchPort(true, SwitchPort.NATIVE_VLAN, null));
+        switchB.setPort(Direction.EAST, new SwitchPort(false, 10, null));
+        switchB.setPort(Direction.NORTH, new SwitchPort(false, 20, null));
+        BlockState interfaceState = ModBlocks.NETWORK_INTERFACE.get().defaultBlockState();
+        helper.setBlock(VLAN_HOST_A, interfaceState.setValue(NetworkInterfaceBlock.FACING, Direction.WEST));
+        helper.setBlock(VLAN_HOST_C, interfaceState.setValue(NetworkInterfaceBlock.FACING, Direction.NORTH));
+        helper.setBlock(VLAN_DHCP, ModBlocks.DHCP_SERVER.get());
+        for (BlockPos cable : List.of(new BlockPos(2, 1, 2), new BlockPos(4, 1, 2), new BlockPos(6, 1, 2), new BlockPos(5, 1, 1))) {
+            placeCable(helper, cable);
+        }
+    }
+
+    // VLAN 10 crosses the trunk to reach the DHCP server; host C in VLAN 20 never hears it.
+    private static void trunkCarriesVlan(GameTestHelper helper) {
+        buildVlanNetwork(helper, "all");
+        helper.startSequence()
+                .thenWaitUntil(() -> helper.assertValueEqual(networkInterface(helper, VLAN_HOST_A).status(), InterfaceStatus.DHCP_BOUND, "host A"))
+                .thenIdle(60)
+                .thenExecute(() -> helper.assertValueEqual(networkInterface(helper, VLAN_HOST_C).status(), InterfaceStatus.UNASSIGNED, "host C"))
+                .thenSucceed();
+    }
+
+    // The trunk only allows VLAN 20, so VLAN 10 is cut off from its DHCP server.
+    private static void trunkFiltersVlan(GameTestHelper helper) {
+        buildVlanNetwork(helper, "20");
+        helper.runAtTickTime(120, () -> {
+            helper.assertValueEqual(networkInterface(helper, VLAN_HOST_A).status(), InterfaceStatus.UNASSIGNED, "host A");
+            helper.assertTrue(!NetworkManager.get(helper.getLevel()).network(helper.getLevel(), helper.absolutePos(VLAN_HOST_A))
+                    .contains(helper.absolutePos(VLAN_DHCP)), "the DHCP server should be outside host A's segment");
+            helper.succeed();
+        });
     }
 
     private static final BlockPos DISCARD_CHEST = new BlockPos(4, 1, 1);

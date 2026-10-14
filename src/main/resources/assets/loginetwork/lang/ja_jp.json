@@ -43,7 +43,7 @@
   "gui.loginetwork.stock_keeper.hint_scroll": "スクロールで変更（Shiftで±16）",
   "gui.loginetwork.stock_keeper.hint_clear": "素手でクリックすると解除",
   "gui.loginetwork.stock_keeper.hint_set": "アイテムを持ってクリックすると在庫維持の対象に設定",
-  "gui.loginetwork.switch.title": "アクセススイッチ - MACアドレステーブル",
+  "gui.loginetwork.switch.title": "アクセススイッチ",
   "gui.loginetwork.switch.mac": "MAC",
   "gui.loginetwork.switch.port": "ポート",
   "gui.loginetwork.switch.age": "経過",
@@ -128,5 +128,14 @@
   "observe.loginetwork.trace.unreachable": "  経路がありません",
   "observe.loginetwork.trace.hop": "  %s  %s（コスト %s）",
   "observe.loginetwork.trace.router": "ルーター %s",
-  "observe.loginetwork.trace.need_interface": "アドレスを持つネットワークインターフェースに使ってください"
+  "observe.loginetwork.trace.need_interface": "アドレスを持つネットワークインターフェースに使ってください",
+  "gui.loginetwork.switch.tab.mac": "MACテーブル",
+  "gui.loginetwork.switch.tab.vlan": "VLAN",
+  "gui.loginetwork.switch.mode": "モード",
+  "gui.loginetwork.switch.mode.access": "アクセス",
+  "gui.loginetwork.switch.mode.trunk": "トランク",
+  "gui.loginetwork.switch.vlan": "VLAN",
+  "gui.loginetwork.switch.allowed": "許可: %s",
+  "gui.loginetwork.switch.vlan_hint": "アクセス: VLAN ID（1〜4094）　トランク: \"all\" または \"10,20-25\" など",
+  "message.loginetwork.invalid_vlan": "VLANの設定が正しくありません（IDは1〜4094、トランクは \"all\" や \"10,20-25\" の形式）"
 }

@@ -70,6 +70,8 @@ public final class TransitPacket {
     boolean waiting;
     long waitSince;
     int priority = PRIORITY_NORMAL;
+    // VLAN tag on each link nodes[i] -> nodes[i + 1], worked out lazily for display; reset with the route.
+    int @Nullable [] linkTags;
 
     TransitPacket(long id, ItemStack stack, List<BlockPos> nodes, boolean startsAtInventory, int hop, long hopStart,
             int hopDuration, BlockPos source, boolean returning, int reroutes, long requestId, @Nullable Ipv4Address replyAddress,
@@ -134,6 +136,7 @@ public final class TransitPacket {
         this.startsAtInventory = startsAtInventory;
         this.hop = 0;
         this.waiting = false;
+        this.linkTags = null;
     }
 
     int lastIndex() {

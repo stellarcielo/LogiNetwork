@@ -1,16 +1,19 @@
 package com.stellarcielo.loginetwork.network.payload;
 
 import java.util.Optional;
+import java.util.Set;
 
 import org.jspecify.annotations.Nullable;
 
 import com.stellarcielo.loginetwork.address.Ipv4Address;
 import com.stellarcielo.loginetwork.address.Ipv4Interface;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
+import com.stellarcielo.loginetwork.block.entity.AccessSwitchBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.DhcpServerBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.RouterBlockEntity;
 import com.stellarcielo.loginetwork.menu.StockKeeperMenu;
+import com.stellarcielo.loginetwork.network.SwitchPort;
 import com.stellarcielo.loginetwork.network.observe.Observation;
 
 import net.minecraft.core.BlockPos;
@@ -139,6 +142,21 @@ public final class ServerPayloadHandlers {
         if (trace.path() != null) {
             PacketDistributor.sendToPlayer(player, new HighlightPathPayload(trace.path().stream().map(Vec3::atCenterOf).toList()));
         }
+    }
+
+    public static void configureSwitchPort(ConfigureSwitchPortPayload payload, IPayloadContext context) {
+        if (!(context.player() instanceof ServerPlayer player)
+                || !(reachableBlockEntity(player, payload.pos()) instanceof AccessSwitchBlockEntity accessSwitch)
+                || payload.port() < 0 || payload.port() >= Direction.values().length) {
+            return;
+        }
+        Optional<Set<Integer>> allowed = SwitchPort.parseAllowed(payload.allowed());
+        if (!SwitchPort.isValidVlan(payload.accessVlan()) || allowed == null) {
+            player.sendOverlayMessage(Component.translatable("message.loginetwork.invalid_vlan"));
+            return;
+        }
+        accessSwitch.setPort(Direction.from3DDataValue(payload.port()), new SwitchPort(payload.trunk(), payload.accessVlan(), allowed.orElse(null)));
+        accessSwitch.openScreen(player);
     }
 
     private static @Nullable BlockEntity reachableBlockEntity(ServerPlayer player, BlockPos pos) {

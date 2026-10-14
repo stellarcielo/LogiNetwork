@@ -20,6 +20,7 @@ import com.stellarcielo.loginetwork.block.CableBlock;
 import com.stellarcielo.loginetwork.block.CableType;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
 import com.stellarcielo.loginetwork.block.RouterBlock;
+import com.stellarcielo.loginetwork.block.entity.AccessSwitchBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.RouterBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 import com.stellarcielo.loginetwork.network.control.ControlPlane;
@@ -489,7 +490,7 @@ public final class NetworkManager extends SavedData {
         Vec3 back = packet.pointOf(packet.hop - 1).subtract(device).normalize();
         int place = Math.max(0, queueLoads.getOrDefault(packet.currentNode(), 1) - 1);
         Vec3 spot = device.add(back.scale(0.55 + 0.3 * place));
-        TransitHopPayload payload = new TransitHopPayload(packet.id, packet.stack.copy(), spot, spot, level.getGameTime(), 1, packet.priority);
+        TransitHopPayload payload = new TransitHopPayload(packet.id, packet.stack.copy(), spot, spot, level.getGameTime(), 1, packet.priority, SwitchPort.UNTAGGED);
         PacketDistributor.sendToPlayersTrackingChunk(level, ChunkPos.containing(BlockPos.containing(spot)), payload);
     }
 
@@ -655,7 +656,7 @@ public final class NetworkManager extends SavedData {
         CableType media = mediaBetween(level.getBlockState(packet.nodes.get(packet.hop)), level.getBlockState(packet.nodes.get(packet.hop + 1)));
         packet.hopStart = gameTime;
         packet.hopDuration = Math.max(1, Mth.ceil(from.distanceTo(to) * media.ticksPerBlock()));
-        TransitHopPayload payload = hopPayload(packet);
+        TransitHopPayload payload = hopPayload(level, packet);
         ChunkPos fromChunk = ChunkPos.containing(BlockPos.containing(from));
         ChunkPos toChunk = ChunkPos.containing(BlockPos.containing(to));
         PacketDistributor.sendToPlayersTrackingChunk(level, fromChunk, payload);
@@ -664,13 +665,36 @@ public final class NetworkManager extends SavedData {
         }
     }
 
-    private static TransitHopPayload hopPayload(TransitPacket packet) {
+    private static TransitHopPayload hopPayload(ServerLevel level, TransitPacket packet) {
         if (packet.waiting) {
             Vec3 here = packet.pointOf(packet.hop);
-            return new TransitHopPayload(packet.id, packet.stack.copy(), here, here, packet.waitSince, 1, packet.priority);
+            return new TransitHopPayload(packet.id, packet.stack.copy(), here, here, packet.waitSince, 1, packet.priority, SwitchPort.UNTAGGED);
         }
         return new TransitHopPayload(packet.id, packet.stack.copy(), packet.pointOf(packet.hop), packet.pointOf(packet.hop + 1),
-                packet.hopStart, packet.hopDuration, packet.priority);
+                packet.hopStart, packet.hopDuration, packet.priority, linkTag(level, packet, packet.hop));
+    }
+
+    // VLAN tag on the link leaving nodes[index], found by replaying the switch port rules along the route.
+    private static int linkTag(ServerLevel level, TransitPacket packet, int index) {
+        if (packet.linkTags == null) {
+            int[] tags = new int[packet.nodes.size()];
+            int tag = SwitchPort.UNTAGGED;
+            for (int i = 0; i + 1 < packet.nodes.size(); i++) {
+                BlockPos node = packet.nodes.get(i);
+                BlockState state = level.isLoaded(node) ? level.getBlockState(node) : null;
+                if (state != null && state.getBlock() instanceof AccessSwitchBlock && i > 0
+                        && level.getBlockEntity(node) instanceof AccessSwitchBlockEntity accessSwitch) {
+                    int vlan = accessSwitch.port(directionBetween(node, packet.nodes.get(i - 1))).ingress(tag);
+                    tag = vlan == SwitchPort.DROP ? SwitchPort.UNTAGGED : accessSwitch.port(directionBetween(node, packet.nodes.get(i + 1))).egress(vlan);
+                    tag = tag == SwitchPort.DROP ? SwitchPort.UNTAGGED : tag;
+                } else if (state == null || CableBlock.typeOf(state) == null) {
+                    tag = SwitchPort.UNTAGGED;
+                }
+                tags[i] = tag;
+            }
+            packet.linkTags = tags;
+        }
+        return index < packet.linkTags.length ? packet.linkTags[index] : SwitchPort.UNTAGGED;
     }
 
     private static void sendRemove(ServerLevel level, TransitPacket packet) {
@@ -685,7 +709,7 @@ public final class NetworkManager extends SavedData {
         for (TransitPacket packet : packets) {
             if (ChunkPos.containing(BlockPos.containing(packet.pointOf(packet.hop))).equals(chunk)
                     || ChunkPos.containing(BlockPos.containing(packet.pointOf(packet.hop + 1))).equals(chunk)) {
-                PacketDistributor.sendToPlayer(player, hopPayload(packet));
+                PacketDistributor.sendToPlayer(player, hopPayload(player.level(), packet));
             }
         }
     }

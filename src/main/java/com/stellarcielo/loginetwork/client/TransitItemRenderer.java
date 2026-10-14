@@ -2,6 +2,7 @@ package com.stellarcielo.loginetwork.client;
 
 import java.util.ArrayList;
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -24,6 +25,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.resources.Identifier;
 import net.minecraft.util.LightCoordsUtil;
+import net.minecraft.util.Mth;
 import net.minecraft.util.context.ContextKey;
 import net.minecraft.world.item.ItemDisplayContext;
 import net.minecraft.world.item.ItemStack;
@@ -52,6 +54,10 @@ public final class TransitItemRenderer {
             new ContextKey<>(Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "transit_items"));
 
     private static final Map<ControlMessageType, ItemStack> CONTROL_ICONS = new EnumMap<>(ControlMessageType.class);
+    private static final Map<Integer, ItemStack> VLAN_TAGS = new HashMap<>();
+    // A small coloured tag rides above items on tagged (trunk) links.
+    private static final float VLAN_TAG_SIZE = 0.18f;
+    private static final double VLAN_TAG_HEIGHT = 0.38;
 
     private TransitItemRenderer() {}
 
@@ -71,6 +77,9 @@ public final class TransitItemRenderer {
             Vec3 pos = ClientTransitTracker.positionAt(hop, time);
             if (isVisible(pos, ITEM_SIZE, camera, maxDistanceSqr, frustum)) {
                 addState(states, level, pos, hop.stack(), (int) hop.id(), spin, ITEM_SIZE, hop.priority());
+                if (hop.vlan() > 0) {
+                    addState(states, level, pos.add(0, VLAN_TAG_HEIGHT, 0), vlanTag(hop.vlan()), hop.vlan(), spin, VLAN_TAG_SIZE, TransitPacket.PRIORITY_NORMAL);
+                }
             }
         }
         if (Config.RENDER_CONTROL_PACKETS.getAsBoolean()) {
@@ -110,6 +119,17 @@ public final class TransitItemRenderer {
             ItemStack stack = new ItemStack(ModItems.CONTROL_PACKET.get());
             stack.set(DataComponents.CUSTOM_MODEL_DATA, new CustomModelData(List.of(), List.of(), List.of(), List.of(t.color())));
             stack.set(DataComponents.ENCHANTMENT_GLINT_OVERRIDE, true);
+            return stack;
+        });
+    }
+
+    // Colour per VLAN ID, spread around the hue circle so neighbouring IDs look different.
+    private static ItemStack vlanTag(int vlan) {
+        return VLAN_TAGS.computeIfAbsent(vlan, id -> {
+            float hue = (id * 0.618034f) % 1.0f;
+            int color = Mth.hsvToRgb(hue, 0.8f, 1.0f) & 0xFFFFFF;
+            ItemStack stack = new ItemStack(ModItems.CONTROL_PACKET.get());
+            stack.set(DataComponents.CUSTOM_MODEL_DATA, new CustomModelData(List.of(), List.of(), List.of(), List.of(color)));
             return stack;
         });
     }
