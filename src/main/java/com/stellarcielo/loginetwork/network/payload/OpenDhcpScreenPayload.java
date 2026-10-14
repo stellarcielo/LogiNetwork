@@ -12,7 +12,7 @@ import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.Identifier;
 
 // Server -> client: open the DHCP server screen with its pool and lease table.
-public record OpenDhcpScreenPayload(BlockPos pos, String rangeStart, String rangeEnd, int prefixLength, List<LeaseView> leases)
+public record OpenDhcpScreenPayload(BlockPos pos, String rangeStart, String rangeEnd, int prefixLength, String dnsServer, List<LeaseView> leases)
         implements CustomPacketPayload {
     public static final Type<OpenDhcpScreenPayload> TYPE = new Type<>(Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "open_dhcp_screen"));
 
@@ -28,6 +28,7 @@ public record OpenDhcpScreenPayload(BlockPos pos, String rangeStart, String rang
             ByteBufCodecs.STRING_UTF8, OpenDhcpScreenPayload::rangeStart,
             ByteBufCodecs.STRING_UTF8, OpenDhcpScreenPayload::rangeEnd,
             ByteBufCodecs.VAR_INT, OpenDhcpScreenPayload::prefixLength,
+            ByteBufCodecs.STRING_UTF8, OpenDhcpScreenPayload::dnsServer,
             LeaseView.STREAM_CODEC.apply(ByteBufCodecs.list()), OpenDhcpScreenPayload::leases,
             OpenDhcpScreenPayload::new);
 

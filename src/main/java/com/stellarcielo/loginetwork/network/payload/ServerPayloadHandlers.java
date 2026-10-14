@@ -10,6 +10,7 @@ import com.stellarcielo.loginetwork.address.Ipv4Interface;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
 import com.stellarcielo.loginetwork.block.entity.AccessSwitchBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.DhcpServerBlockEntity;
+import com.stellarcielo.loginetwork.block.entity.DnsServerBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.RouterBlockEntity;
 import com.stellarcielo.loginetwork.menu.StockKeeperMenu;
@@ -52,6 +53,23 @@ public final class ServerPayloadHandlers {
         blockEntity.configure(payload.dhcp(), staticConfig);
         blockEntity.host().setSupply(payload.supply());
         blockEntity.setPriority(payload.priority());
+        Ipv4Address staticDns = null;
+        if (!payload.staticDns().isBlank()) {
+            Optional<Ipv4Address> parsed = Ipv4Address.parse(payload.staticDns());
+            if (parsed.isEmpty()) {
+                player.sendOverlayMessage(Component.translatable("message.loginetwork.invalid_address", payload.staticDns()));
+                return;
+            }
+            staticDns = parsed.get();
+        }
+        String hostname = payload.hostname().trim();
+        String extractTarget = payload.extractTarget().trim();
+        if ((!hostname.isEmpty() && DnsServerBlockEntity.normalize(hostname).isEmpty())
+                || (!extractTarget.isEmpty() && DnsServerBlockEntity.normalize(extractTarget).isEmpty())) {
+            player.sendOverlayMessage(Component.translatable("message.loginetwork.invalid_hostname"));
+            return;
+        }
+        blockEntity.configureNames(hostname, staticDns, extractTarget);
 
         ServerLevel level = player.level();
         BlockState state = level.getBlockState(payload.pos());
@@ -76,14 +94,24 @@ public final class ServerPayloadHandlers {
             player.sendOverlayMessage(Component.translatable("message.loginetwork.invalid_pool"));
             return;
         }
+        Ipv4Address dns = null;
+        if (!payload.dnsServer().isBlank()) {
+            Optional<Ipv4Address> parsed = Ipv4Address.parse(payload.dnsServer());
+            if (parsed.isEmpty()) {
+                player.sendOverlayMessage(Component.translatable("message.loginetwork.invalid_address", payload.dnsServer()));
+                return;
+            }
+            dns = parsed.get();
+        }
         blockEntity.configure(start.get(), end.get(), payload.prefixLength());
+        blockEntity.setDnsServer(dns);
     }
 
     public static void openStockKeeper(OpenStockKeeperPayload payload, IPayloadContext context) {
         if (context.player() instanceof ServerPlayer player
                 && reachableBlockEntity(player, payload.pos()) instanceof NetworkInterfaceBlockEntity blockEntity) {
             player.openMenu(new SimpleMenuProvider((containerId, inventory, p) -> new StockKeeperMenu(containerId, inventory, blockEntity),
-                    Component.translatable("gui.loginetwork.stock_keeper.title")), payload.pos());
+                    Component.translatable("gui.loginetwork.stock_keeper.title")), buf -> StockKeeperMenu.writeOpenData(buf, blockEntity));
         }
     }
 
@@ -133,12 +161,28 @@ public final class ServerPayloadHandlers {
             return;
         }
         Optional<Ipv4Address> destination = Ipv4Address.parse(payload.destination());
-        if (destination.isEmpty()) {
+        if (destination.isPresent()) {
+            runTrace(player, payload.pos(), destination.get());
+            return;
+        }
+        // Not an address: look it up as a host name through the interface's DNS server.
+        if (DnsServerBlockEntity.normalize(payload.destination()).isEmpty()
+                || !(player.level().getBlockEntity(payload.pos()) instanceof NetworkInterfaceBlockEntity host)) {
             player.sendOverlayMessage(Component.translatable("message.loginetwork.invalid_address", payload.destination()));
             return;
         }
-        Observation.Trace trace = Observation.trace(player.level(), payload.pos(), destination.get());
-        Observation.describeTrace(destination.get(), trace).forEach(player::sendSystemMessage);
+        host.resolver().resolve(player.level(), payload.destination(), address -> {
+            if (address == null) {
+                player.sendSystemMessage(Component.translatable("observe.loginetwork.trace.unresolved", payload.destination()));
+            } else {
+                runTrace(player, payload.pos(), address);
+            }
+        });
+    }
+
+    private static void runTrace(ServerPlayer player, BlockPos from, Ipv4Address destination) {
+        Observation.Trace trace = Observation.trace(player.level(), from, destination);
+        Observation.describeTrace(destination, trace).forEach(player::sendSystemMessage);
         if (trace.path() != null) {
             PacketDistributor.sendToPlayer(player, new HighlightPathPayload(trace.path().stream().map(Vec3::atCenterOf).toList()));
         }
@@ -157,6 +201,38 @@ public final class ServerPayloadHandlers {
         }
         accessSwitch.setPort(Direction.from3DDataValue(payload.port()), new SwitchPort(payload.trunk(), payload.accessVlan(), allowed.orElse(null)));
         accessSwitch.openScreen(player);
+    }
+
+    public static void setFilterSource(SetFilterSourcePayload payload, IPayloadContext context) {
+        if (!(context.player() instanceof ServerPlayer player)
+                || !(reachableBlockEntity(player, payload.pos()) instanceof NetworkInterfaceBlockEntity blockEntity)
+                || payload.slot() < 0 || payload.slot() >= StockKeeperMenu.FILTER_SLOTS) {
+            return;
+        }
+        String source = payload.source().trim();
+        if (!source.isEmpty() && DnsServerBlockEntity.normalize(source).isEmpty()) {
+            player.sendOverlayMessage(Component.translatable("message.loginetwork.invalid_hostname"));
+            return;
+        }
+        blockEntity.host().setSource(payload.slot(), source);
+    }
+
+    public static void configureDns(ConfigureDnsPayload payload, IPayloadContext context) {
+        if (!(context.player() instanceof ServerPlayer player)
+                || !(reachableBlockEntity(player, payload.pos()) instanceof DnsServerBlockEntity server)) {
+            return;
+        }
+        if (payload.add()) {
+            String[] parts = payload.text().trim().split("\\s+");
+            Optional<Ipv4Address> address = parts.length == 2 ? Ipv4Address.parse(parts[1]) : Optional.empty();
+            if (address.isEmpty() || !server.addManual(parts[0], address.get())) {
+                player.sendOverlayMessage(Component.translatable("message.loginetwork.invalid_dns_record", payload.text()));
+                return;
+            }
+        } else {
+            server.remove(payload.index());
+        }
+        server.openScreen(player);
     }
 
     private static @Nullable BlockEntity reachableBlockEntity(ServerPlayer player, BlockPos pos) {

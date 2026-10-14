@@ -6,6 +6,7 @@
     "loginetwork:dhcp_server",
     "loginetwork:access_switch",
     "loginetwork:router",
-    "loginetwork:fiber_cable"
+    "loginetwork:fiber_cable",
+    "loginetwork:dns_server"
   ]
 }

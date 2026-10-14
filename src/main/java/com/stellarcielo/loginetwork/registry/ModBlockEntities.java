@@ -4,6 +4,7 @@ import com.stellarcielo.loginetwork.LogiNetwork;
 import com.stellarcielo.loginetwork.block.entity.AccessSwitchBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.DhcpServerBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.DiscardChestBlockEntity;
+import com.stellarcielo.loginetwork.block.entity.DnsServerBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.RouterBlockEntity;
 
@@ -30,6 +31,9 @@ public final class ModBlockEntities {
 
     public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<DiscardChestBlockEntity>> DISCARD_CHEST =
             BLOCK_ENTITY_TYPES.register("discard_chest", () -> new BlockEntityType<>(DiscardChestBlockEntity::new, ModBlocks.DISCARD_CHEST.get()));
+
+    public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<DnsServerBlockEntity>> DNS_SERVER =
+            BLOCK_ENTITY_TYPES.register("dns_server", () -> new BlockEntityType<>(DnsServerBlockEntity::new, ModBlocks.DNS_SERVER.get()));
 
     private ModBlockEntities() {}
 

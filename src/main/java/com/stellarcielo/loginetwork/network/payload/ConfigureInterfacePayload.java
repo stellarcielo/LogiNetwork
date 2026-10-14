@@ -10,7 +10,8 @@ import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.Identifier;
 
 // Client -> server: apply settings from the network interface screen. staticConfig is "a.b.c.d/len" or empty.
-public record ConfigureInterfacePayload(BlockPos pos, boolean dhcp, String staticConfig, boolean extract, boolean supply, int priority) implements CustomPacketPayload {
+public record ConfigureInterfacePayload(BlockPos pos, boolean dhcp, String staticConfig, boolean extract, boolean supply, int priority,
+        String hostname, String staticDns, String extractTarget) implements CustomPacketPayload {
     public static final Type<ConfigureInterfacePayload> TYPE = new Type<>(Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "configure_interface"));
 
     public static final StreamCodec<RegistryFriendlyByteBuf, ConfigureInterfacePayload> STREAM_CODEC = StreamCodec.composite(
@@ -20,6 +21,9 @@ public record ConfigureInterfacePayload(BlockPos pos, boolean dhcp, String stati
             ByteBufCodecs.BOOL, ConfigureInterfacePayload::extract,
             ByteBufCodecs.BOOL, ConfigureInterfacePayload::supply,
             ByteBufCodecs.VAR_INT, ConfigureInterfacePayload::priority,
+            ByteBufCodecs.stringUtf8(64), ConfigureInterfacePayload::hostname,
+            ByteBufCodecs.stringUtf8(32), ConfigureInterfacePayload::staticDns,
+            ByteBufCodecs.stringUtf8(64), ConfigureInterfacePayload::extractTarget,
             ConfigureInterfacePayload::new);
 
     @Override

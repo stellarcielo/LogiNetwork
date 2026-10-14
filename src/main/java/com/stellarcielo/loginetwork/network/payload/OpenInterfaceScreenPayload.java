@@ -14,8 +14,18 @@ import net.minecraft.world.item.ItemStack;
 
 // Server -> client: open the network interface screen with a snapshot of its state. Empty strings mean "none".
 public record OpenInterfaceScreenPayload(BlockPos pos, String mac, boolean dhcp, String staticConfig, String assigned, int status, boolean extract,
-        boolean supply, int priority, List<RequestView> requests) implements CustomPacketPayload {
+        boolean supply, int priority, Names names, List<RequestView> requests) implements CustomPacketPayload {
     public static final Type<OpenInterfaceScreenPayload> TYPE = new Type<>(Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "open_interface_screen"));
+
+    // DNS-related settings. dnsServer is the server actually in use (from DHCP or static); empty strings mean none.
+    public record Names(String hostname, String staticDns, String dnsServer, String extractTarget) {
+        static final StreamCodec<RegistryFriendlyByteBuf, Names> STREAM_CODEC = StreamCodec.composite(
+                ByteBufCodecs.STRING_UTF8, Names::hostname,
+                ByteBufCodecs.STRING_UTF8, Names::staticDns,
+                ByteBufCodecs.STRING_UTF8, Names::dnsServer,
+                ByteBufCodecs.STRING_UTF8, Names::extractTarget,
+                Names::new);
+    }
 
     // One outstanding request on the requester side.
     public record RequestView(long id, ItemStack item, int requested, int received, int inTransit) {
@@ -38,6 +48,7 @@ public record OpenInterfaceScreenPayload(BlockPos pos, String mac, boolean dhcp,
             ByteBufCodecs.BOOL, OpenInterfaceScreenPayload::extract,
             ByteBufCodecs.BOOL, OpenInterfaceScreenPayload::supply,
             ByteBufCodecs.VAR_INT, OpenInterfaceScreenPayload::priority,
+            Names.STREAM_CODEC, OpenInterfaceScreenPayload::names,
             RequestView.STREAM_CODEC.apply(ByteBufCodecs.list()), OpenInterfaceScreenPayload::requests,
             OpenInterfaceScreenPayload::new);
 

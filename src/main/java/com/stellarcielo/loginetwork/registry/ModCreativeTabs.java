@@ -24,6 +24,7 @@ public final class ModCreativeTabs {
                 output.accept(ModItems.DHCP_SERVER.get());
                 output.accept(ModItems.ACCESS_SWITCH.get());
                 output.accept(ModItems.ROUTER.get());
+                output.accept(ModItems.DNS_SERVER.get());
                 output.accept(ModItems.DISCARD_CHEST.get());
                 output.accept(ModItems.OBSERVATION_TOOL.get());
             }).build());

@@ -51,6 +51,8 @@ public class DhcpServerBlockEntity extends BlockEntity {
     private int reclaimCooldown = RECLAIM_INTERVAL;
     // False only for a server that was just placed; it then takes its own subnet so pools never overlap by default.
     private boolean poolAssigned;
+    // DNS server handed out with leases; null means "the first DNS host found in the segment".
+    private @Nullable Ipv4Address dnsServer;
 
     public DhcpServerBlockEntity(BlockPos pos, BlockState state) {
         super(ModBlockEntities.DHCP_SERVER.get(), pos, state);
@@ -69,6 +71,29 @@ public class DhcpServerBlockEntity extends BlockEntity {
             poolAssigned = true;
             setChanged();
         }
+    }
+
+    public @Nullable Ipv4Address configuredDnsServer() {
+        return dnsServer;
+    }
+
+    public void setDnsServer(@Nullable Ipv4Address dnsServer) {
+        this.dnsServer = dnsServer;
+        setChanged();
+    }
+
+    // The DNS server address for clients in this segment.
+    public @Nullable Ipv4Address dnsServerFor(ServerLevel level, CableNetwork segment) {
+        if (dnsServer != null) {
+            return dnsServer;
+        }
+        for (BlockPos pos : segment.interfaces()) {
+            if (level.getBlockEntity(pos) instanceof NetworkInterfaceBlockEntity host && host.frontDnsServer(level) != null
+                    && host.hasUsableAddress() && host.assigned() != null) {
+                return host.assigned().address();
+            }
+        }
+        return null;
     }
 
     public Ipv4Address rangeStart() {
@@ -166,7 +191,8 @@ public class DhcpServerBlockEntity extends BlockEntity {
         for (Lease lease : leases.values()) {
             views.add(new OpenDhcpScreenPayload.LeaseView(lease.mac().toString(), lease.address().toString()));
         }
-        PacketDistributor.sendToPlayer(player, new OpenDhcpScreenPayload(worldPosition, rangeStart.toString(), rangeEnd.toString(), prefixLength, views));
+        PacketDistributor.sendToPlayer(player, new OpenDhcpScreenPayload(worldPosition, rangeStart.toString(), rangeEnd.toString(), prefixLength,
+                dnsServer == null ? "" : dnsServer.toString(), views));
     }
 
     @Override
@@ -177,6 +203,7 @@ public class DhcpServerBlockEntity extends BlockEntity {
         output.putInt("prefix_length", prefixLength);
         output.store("leases", Lease.CODEC.listOf(), List.copyOf(leases.values()));
         output.putBoolean("pool_assigned", poolAssigned);
+        output.storeNullable("dns_server", Ipv4Address.CODEC, dnsServer);
     }
 
     @Override
@@ -185,6 +212,7 @@ public class DhcpServerBlockEntity extends BlockEntity {
         // Servers saved before pools were assigned per server keep the pool they already had.
         poolAssigned = input.getBooleanOr("pool_assigned", input.read("range_start", Ipv4Address.CODEC).isPresent());
         rangeStart = input.read("range_start", Ipv4Address.CODEC).orElse(DEFAULT_RANGE_START);
+        dnsServer = input.read("dns_server", Ipv4Address.CODEC).orElse(null);
         rangeEnd = input.read("range_end", Ipv4Address.CODEC).orElse(DEFAULT_RANGE_END);
         prefixLength = input.getIntOr("prefix_length", DEFAULT_PREFIX_LENGTH);
         leases.clear();

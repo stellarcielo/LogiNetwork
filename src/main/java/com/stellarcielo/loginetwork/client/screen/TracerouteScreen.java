@@ -29,8 +29,8 @@ public class TracerouteScreen extends Screen {
         int left = (this.width - PANEL_WIDTH) / 2;
         int top = this.height / 2 - 30;
         this.destination = new EditBox(this.font, left, top + 16, PANEL_WIDTH, 20, Component.translatable("gui.loginetwork.traceroute.destination"));
-        this.destination.setMaxLength(15);
-        this.destination.setHint(Component.literal("10.1.0.2"));
+        this.destination.setMaxLength(32);
+        this.destination.setHint(Component.literal("10.1.0.2 / warehouse"));
         this.destination.setValue(lastDestination);
         this.addRenderableWidget(this.destination);
         this.setInitialFocus(this.destination);

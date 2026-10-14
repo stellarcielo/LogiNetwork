@@ -22,6 +22,9 @@ public class DhcpServerScreen extends Screen {
     private EditBox startEdit;
     private EditBox endEdit;
     private EditBox prefixEdit;
+    private EditBox dnsEdit;
+    // Lease list starts below the pool row and the DNS row.
+    private static final int LEASES_OFFSET = 96;
 
     public DhcpServerScreen(OpenDhcpScreenPayload data) {
         super(Component.translatable("gui.loginetwork.dhcp.title"));
@@ -33,7 +36,7 @@ public class DhcpServerScreen extends Screen {
     }
 
     private int top() {
-        return this.height / 2 - 100;
+        return Math.max(4, this.height / 2 - 110);
     }
 
     @Override
@@ -45,8 +48,10 @@ public class DhcpServerScreen extends Screen {
         this.endEdit = addField(left + fieldWidth + 8, y, fieldWidth, data.rangeEnd(), "gui.loginetwork.dhcp.range_end");
         this.prefixEdit = addField(left + 2 * (fieldWidth + 8), y, PANEL_WIDTH - 2 * (fieldWidth + 8), String.valueOf(data.prefixLength()), "gui.loginetwork.dhcp.prefix");
         this.prefixEdit.setMaxLength(2);
+        this.dnsEdit = addField(left, top() + 70, fieldWidth * 2 + 8, data.dnsServer(), "gui.loginetwork.dhcp.dns");
+        this.dnsEdit.setHint(Component.translatable("gui.loginetwork.dhcp.dns_auto"));
 
-        int buttonY = top() + 60 + 12 * (MAX_VISIBLE_LEASES + 1) + 8;
+        int buttonY = top() + LEASES_OFFSET + 12 * (MAX_VISIBLE_LEASES + 1) + 8;
         this.addRenderableWidget(Button.builder(CommonComponents.GUI_DONE, button -> onDone())
                 .bounds(left, buttonY, PANEL_WIDTH / 2 - 2, 20).build());
         this.addRenderableWidget(Button.builder(CommonComponents.GUI_CANCEL, button -> onClose())
@@ -67,7 +72,8 @@ public class DhcpServerScreen extends Screen {
         } catch (NumberFormatException e) {
             prefixLength = -1;
         }
-        ClientPacketDistributor.sendToServer(new ConfigureDhcpPayload(data.pos(), startEdit.getValue().trim(), endEdit.getValue().trim(), prefixLength));
+        ClientPacketDistributor.sendToServer(new ConfigureDhcpPayload(data.pos(), startEdit.getValue().trim(), endEdit.getValue().trim(), prefixLength,
+                dnsEdit.getValue().trim()));
         onClose();
     }
 
@@ -81,7 +87,8 @@ public class DhcpServerScreen extends Screen {
         graphics.text(this.font, Component.translatable("gui.loginetwork.dhcp.range_end"), left + 104, top + 14, LABEL_COLOR);
         graphics.text(this.font, Component.translatable("gui.loginetwork.dhcp.prefix"), left + 208, top + 14, LABEL_COLOR);
 
-        int y = top + 60;
+        graphics.text(this.font, Component.translatable("gui.loginetwork.dhcp.dns"), left, top + 60, LABEL_COLOR);
+        int y = top + LEASES_OFFSET;
         graphics.text(this.font, Component.translatable("gui.loginetwork.dhcp.leases", data.leases().size()), left, y, LABEL_COLOR);
         if (data.leases().isEmpty()) {
             graphics.text(this.font, Component.translatable("gui.loginetwork.none"), left + 8, y + 12, VALUE_COLOR);

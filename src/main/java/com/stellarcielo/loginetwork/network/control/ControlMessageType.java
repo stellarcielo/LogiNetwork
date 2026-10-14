@@ -11,7 +11,10 @@ public enum ControlMessageType {
     RECEIVED(0xF2F2F2),
     LSA(0xB04DFF),
     ADVERTISE(0xFF9A3D),
-    WITHDRAW(0x9A9A9A);
+    WITHDRAW(0x9A9A9A),
+    DNS_QUERY(0xFF7AD9),
+    DNS_RESPONSE(0xFFB3EC),
+    DNS_REGISTER(0xC94DA6);
 
     // Colour of the light particle drawn on the client.
     private final int color;

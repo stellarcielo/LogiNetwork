@@ -1,6 +1,7 @@
 package com.stellarcielo.loginetwork.gametest;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
@@ -13,6 +14,7 @@ import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
 import com.stellarcielo.loginetwork.block.entity.AccessSwitchBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.DhcpServerBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.DiscardChestBlockEntity;
+import com.stellarcielo.loginetwork.block.entity.DnsServerBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.InterfaceStatus;
 import com.stellarcielo.loginetwork.block.entity.NetworkInterfaceBlockEntity;
 import com.stellarcielo.loginetwork.block.entity.RouterBlockEntity;
@@ -117,6 +119,13 @@ public final class ModGameTests {
     private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> TRUNK_FILTERS_VLAN =
             TEST_FUNCTIONS.register("trunk_filters_vlan", () -> ModGameTests::trunkFiltersVlan);
 
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> DNS_REGISTERS_AND_RESOLVES =
+            TEST_FUNCTIONS.register("dns_registers_and_resolves", () -> ModGameTests::dnsRegistersAndResolves);
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> NAMED_REQUEST_USES_NAMED_SUPPLIER =
+            TEST_FUNCTIONS.register("named_request_uses_named_supplier", () -> ModGameTests::namedRequestUsesNamedSupplier);
+    private static final DeferredHolder<Consumer<GameTestHelper>, Consumer<GameTestHelper>> NAMED_EXTRACT_GOES_TO_NAMED_HOST =
+            TEST_FUNCTIONS.register("named_extract_goes_to_named_host", () -> ModGameTests::namedExtractGoesToNamedHost);
+
     private static final Identifier STRUCTURE = Identifier.fromNamespaceAndPath(LogiNetwork.MOD_ID, "empty_7x3x3");
 
     // Protocol layout (7x3x5): requester chest/interface at x=0/1, cables at x=2 and x=4 with a switch at x=3,
@@ -190,6 +199,9 @@ public final class ModGameTests {
         registerTest(event, environment, ECMP_SPREADS_PACKETS, 600, ECMP_STRUCTURE);
         registerTest(event, environment, TRUNK_CARRIES_VLAN, 300, ROUTED_STRUCTURE);
         registerTest(event, environment, TRUNK_FILTERS_VLAN, 300, ROUTED_STRUCTURE);
+        registerTest(event, environment, DNS_REGISTERS_AND_RESOLVES, 300, PROTOCOL_STRUCTURE);
+        registerTest(event, environment, NAMED_REQUEST_USES_NAMED_SUPPLIER, 400, PROTOCOL_STRUCTURE);
+        registerTest(event, environment, NAMED_EXTRACT_GOES_TO_NAMED_HOST, 400, PROTOCOL_STRUCTURE);
     }
 
     private static void registerTest(RegisterGameTestsEvent event, Holder<TestEnvironmentDefinition<?>> environment,
@@ -686,6 +698,64 @@ public final class ModGameTests {
             helper.assertTrue(!NetworkManager.get(helper.getLevel()).network(helper.getLevel(), helper.absolutePos(VLAN_HOST_A))
                     .contains(helper.absolutePos(VLAN_DHCP)), "the DHCP server should be outside host A's segment");
             helper.succeed();
+        });
+    }
+
+    // Protocol layout with both suppliers plus a DNS host: interface at (4,1,1) facing north into a DNS server at (4,1,0).
+    private static final BlockPos DNS_HOST = new BlockPos(4, 1, 1);
+    private static final BlockPos DNS_SERVER = new BlockPos(4, 1, 0);
+    private static final Ipv4Address DNS_ADDRESS = new Ipv4Address(0x0A000009); // 10.0.0.9
+
+    private static void buildDnsNetwork(GameTestHelper helper) {
+        helper.setBlock(DNS_SERVER, ModBlocks.DNS_SERVER.get());
+        helper.setBlock(DNS_HOST, ModBlocks.NETWORK_INTERFACE.get().defaultBlockState().setValue(NetworkInterfaceBlock.FACING, Direction.NORTH));
+        buildProtocolLine(helper, true);
+        setStatic(helper, DNS_HOST, "10.0.0.9/24");
+        nameHost(helper, REQUESTER, "", "");
+        nameHost(helper, SUPPLIER_1, "warehouse1", "");
+        nameHost(helper, SUPPLIER_2, "warehouse2", "");
+    }
+
+    private static void nameHost(GameTestHelper helper, BlockPos pos, String hostname, String extractTarget) {
+        networkInterface(helper, pos).configureNames(hostname, DNS_ADDRESS, extractTarget);
+    }
+
+    // Supplier 1 registers its name dynamically; the requester resolves it over DNS_QUERY / DNS_RESPONSE.
+    private static void dnsRegistersAndResolves(GameTestHelper helper) {
+        buildDnsNetwork(helper);
+        Ipv4Address[] resolved = {null};
+        helper.startSequence()
+                .thenWaitUntil(() -> helper.assertTrue(Objects.equals(helper.getBlockEntity(DNS_SERVER, DnsServerBlockEntity.class)
+                        .lookup("warehouse1", helper.getLevel().getGameTime()), Ipv4Address.parse("10.0.0.2").orElseThrow()), "waiting for registration"))
+                .thenExecute(() -> networkInterface(helper, REQUESTER).resolver().resolve(helper.getLevel(), "Warehouse1", address -> resolved[0] = address))
+                .thenWaitUntil(() -> helper.assertTrue(Objects.equals(resolved[0], Ipv4Address.parse("10.0.0.2").orElseThrow()),
+                        "waiting for resolution, got " + resolved[0]))
+                .thenSucceed();
+    }
+
+    // Both suppliers have iron; the filter names the farther one, so only it gives any.
+    private static void namedRequestUsesNamedSupplier(GameTestHelper helper) {
+        buildDnsNetwork(helper);
+        chest(helper, SUPPLIER_1_CHEST).setItem(0, new ItemStack(Items.IRON_INGOT, 64));
+        chest(helper, SUPPLIER_2_CHEST).setItem(0, new ItemStack(Items.IRON_INGOT, 64));
+        keepStocked(helper, REQUESTER, Items.IRON_INGOT, 16);
+        networkInterface(helper, REQUESTER).host().setSource(0, "warehouse1");
+        helper.succeedWhen(() -> {
+            helper.assertValueEqual(chest(helper, REQUESTER_CHEST).countItem(Items.IRON_INGOT), 16, "iron at requester");
+            helper.assertValueEqual(chest(helper, SUPPLIER_1_CHEST).countItem(Items.IRON_INGOT), 48, "iron at warehouse1");
+            helper.assertValueEqual(chest(helper, SUPPLIER_2_CHEST).countItem(Items.IRON_INGOT), 64, "iron at warehouse2");
+        });
+    }
+
+    // Supplier 2 extracts with a target name: the items skip the nearer requester and go to warehouse1.
+    private static void namedExtractGoesToNamedHost(GameTestHelper helper) {
+        buildDnsNetwork(helper);
+        nameHost(helper, SUPPLIER_2, "warehouse2", "warehouse1");
+        helper.setBlock(SUPPLIER_2, helper.getBlockState(SUPPLIER_2).setValue(NetworkInterfaceBlock.EXTRACT, true));
+        chest(helper, SUPPLIER_2_CHEST).setItem(0, new ItemStack(Items.IRON_INGOT, 8));
+        helper.succeedWhen(() -> {
+            helper.assertValueEqual(chest(helper, SUPPLIER_1_CHEST).countItem(Items.IRON_INGOT), 8, "iron at warehouse1");
+            helper.assertValueEqual(chest(helper, REQUESTER_CHEST).countItem(Items.IRON_INGOT), 0, "iron at requester");
         });
     }
 

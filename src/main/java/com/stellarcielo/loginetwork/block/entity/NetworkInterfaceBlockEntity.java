@@ -6,6 +6,7 @@ import java.util.Objects;
 
 import org.jspecify.annotations.Nullable;
 
+import com.stellarcielo.loginetwork.address.Ipv4Address;
 import com.stellarcielo.loginetwork.address.Ipv4Interface;
 import com.stellarcielo.loginetwork.address.MacAddress;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
@@ -14,6 +15,7 @@ import com.stellarcielo.loginetwork.network.NetworkManager;
 import com.stellarcielo.loginetwork.network.TransitPacket;
 import com.stellarcielo.loginetwork.network.control.ControlEndpoint;
 import com.stellarcielo.loginetwork.network.control.ControlMessage;
+import com.stellarcielo.loginetwork.network.host.DnsResolver;
 import com.stellarcielo.loginetwork.network.host.HostAgent;
 import com.stellarcielo.loginetwork.network.payload.OpenInterfaceScreenPayload;
 import com.stellarcielo.loginetwork.registry.ModBlockEntities;
@@ -48,6 +50,14 @@ public class NetworkInterfaceBlockEntity extends BlockEntity implements ControlE
     private InterfaceStatus status = InterfaceStatus.UNASSIGNED;
     private int checkCooldown;
     private final HostAgent host = new HostAgent(this);
+    private final DnsResolver resolver = new DnsResolver(this);
+    // Name registered in DNS for this host; empty for none.
+    private String hostname = "";
+    // DNS server for statically addressed hosts; DHCP hosts get theirs with the lease.
+    private @Nullable Ipv4Address staticDns;
+    private @Nullable Ipv4Address leaseDns;
+    // Host name that extraction sends to instead of the nearest inventory; empty for nearest.
+    private String extractTarget = "";
 
     public NetworkInterfaceBlockEntity(BlockPos pos, BlockState state) {
         super(ModBlockEntities.NETWORK_INTERFACE.get(), pos, state);
@@ -59,9 +69,48 @@ public class NetworkInterfaceBlockEntity extends BlockEntity implements ControlE
         return host;
     }
 
+    public DnsResolver resolver() {
+        return resolver;
+    }
+
     @Override
     public void onControlMessage(ServerLevel level, ControlMessage message) {
-        host.onControlMessage(level, message);
+        if (!resolver.onControlMessage(level, message)) {
+            host.onControlMessage(level, message);
+        }
+    }
+
+    public String hostname() {
+        return hostname;
+    }
+
+    public String extractTarget() {
+        return extractTarget;
+    }
+
+    public @Nullable Ipv4Address staticDns() {
+        return staticDns;
+    }
+
+    public void configureNames(String hostname, @Nullable Ipv4Address staticDns, String extractTarget) {
+        this.hostname = hostname;
+        this.staticDns = staticDns;
+        this.extractTarget = extractTarget;
+        setChanged();
+    }
+
+    // The DNS server placed against our front, if this interface hosts one.
+    public @Nullable DnsServerBlockEntity frontDnsServer(ServerLevel level) {
+        BlockPos front = worldPosition.relative(getBlockState().getValue(NetworkInterfaceBlock.FACING));
+        return level.isLoaded(front) && level.getBlockEntity(front) instanceof DnsServerBlockEntity server ? server : null;
+    }
+
+    // Where to send DNS queries: ourselves if we host the server, else the DHCP-provided or configured address.
+    public @Nullable Ipv4Address dnsServer(ServerLevel level) {
+        if (frontDnsServer(level) != null && hasUsableAddress() && assigned != null) {
+            return assigned.address();
+        }
+        return dhcp ? leaseDns : staticDns;
     }
 
     // Hosts take part in the request protocol only with a working address.
@@ -118,6 +167,7 @@ public class NetworkInterfaceBlockEntity extends BlockEntity implements ControlE
             blockEntity.refresh(serverLevel);
         }
         blockEntity.host.tick(serverLevel);
+        blockEntity.resolver.tick(serverLevel);
     }
 
     private void refresh(ServerLevel level) {
@@ -148,6 +198,7 @@ public class NetworkInterfaceBlockEntity extends BlockEntity implements ControlE
         // Renew: keep the lease while its server is still reachable and still holds it.
         if (assigned != null && leaseServer != null && segment.dhcpServers().contains(leaseServer)
                 && dhcpServerAt(level, leaseServer) instanceof DhcpServerBlockEntity server && server.holdsLease(mac, assigned)) {
+            leaseDns = server.dnsServerFor(level, segment);
             return;
         }
         releaseLease(level);
@@ -161,6 +212,7 @@ public class NetworkInterfaceBlockEntity extends BlockEntity implements ControlE
             if (offer != null && server.request(mac, offer, worldPosition)) {
                 assigned = offer;
                 leaseServer = serverPos;
+                leaseDns = server.dnsServerFor(level, segment);
                 setChanged();
                 return;
             }
@@ -195,6 +247,7 @@ public class NetworkInterfaceBlockEntity extends BlockEntity implements ControlE
     public void preRemoveSideEffects(BlockPos pos, BlockState state) {
         super.preRemoveSideEffects(pos, state);
         if (level instanceof ServerLevel serverLevel) {
+            resolver.unregister(serverLevel);
             releaseLease(serverLevel);
         }
     }
@@ -206,7 +259,14 @@ public class NetworkInterfaceBlockEntity extends BlockEntity implements ControlE
         }
         PacketDistributor.sendToPlayer(player, new OpenInterfaceScreenPayload(worldPosition, mac.toString(), dhcp,
                 staticConfig == null ? "" : staticConfig.toString(), assigned == null ? "" : assigned.toString(),
-                status.ordinal(), getBlockState().getValue(NetworkInterfaceBlock.EXTRACT), host.supplies(), priority, requests));
+                status.ordinal(), getBlockState().getValue(NetworkInterfaceBlock.EXTRACT), host.supplies(), priority,
+                new OpenInterfaceScreenPayload.Names(hostname, staticDns == null ? "" : staticDns.toString(), dnsServerText(player.level()), extractTarget),
+                requests));
+    }
+
+    private String dnsServerText(ServerLevel level) {
+        Ipv4Address server = dnsServer(level);
+        return server == null ? "" : server.toString();
     }
 
     @Override
@@ -219,6 +279,10 @@ public class NetworkInterfaceBlockEntity extends BlockEntity implements ControlE
         output.storeNullable("assigned", Ipv4Interface.CODEC, assigned);
         output.storeNullable("lease_server", BlockPos.CODEC, leaseServer);
         output.putInt("status", status.ordinal());
+        output.putString("hostname", hostname);
+        output.storeNullable("static_dns", Ipv4Address.CODEC, staticDns);
+        output.storeNullable("lease_dns", Ipv4Address.CODEC, leaseDns);
+        output.putString("extract_target", extractTarget);
         host.save(output);
     }
 
@@ -232,6 +296,10 @@ public class NetworkInterfaceBlockEntity extends BlockEntity implements ControlE
         assigned = input.read("assigned", Ipv4Interface.CODEC).orElse(null);
         leaseServer = input.read("lease_server", BlockPos.CODEC).orElse(null);
         status = InterfaceStatus.byOrdinal(input.getIntOr("status", 0));
+        hostname = input.getStringOr("hostname", "");
+        staticDns = input.read("static_dns", Ipv4Address.CODEC).orElse(null);
+        leaseDns = input.read("lease_dns", Ipv4Address.CODEC).orElse(null);
+        extractTarget = input.getStringOr("extract_target", "");
         host.load(input);
     }
 }

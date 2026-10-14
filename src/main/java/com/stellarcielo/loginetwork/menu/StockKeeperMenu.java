@@ -35,10 +35,31 @@ public class StockKeeperMenu extends AbstractContainerMenu {
     private final ContainerData targets;
     private final BlockPos pos;
     private final HostAgent host;
+    // Supplier host name per slot. On the client a copy sent when the menu opens, updated locally on edit.
+    private final String[] sources = new String[FILTER_SLOTS];
 
     // Client side.
     public StockKeeperMenu(int containerId, Inventory inventory, RegistryFriendlyByteBuf buf) {
         this(containerId, inventory, buf.readBlockPos(), new SimpleContainer(FILTER_SLOTS), new SimpleContainerData(FILTER_SLOTS), ContainerLevelAccess.NULL, null);
+        for (int slot = 0; slot < FILTER_SLOTS; slot++) {
+            sources[slot] = buf.readUtf();
+        }
+    }
+
+    // Extra open data: the interface position and the supplier name of every slot.
+    public static void writeOpenData(RegistryFriendlyByteBuf buf, NetworkInterfaceBlockEntity blockEntity) {
+        buf.writeBlockPos(blockEntity.getBlockPos());
+        for (int slot = 0; slot < FILTER_SLOTS; slot++) {
+            buf.writeUtf(blockEntity.host().source(slot));
+        }
+    }
+
+    public String source(int slot) {
+        return host != null ? host.source(slot) : sources[slot] == null ? "" : sources[slot];
+    }
+
+    public void setSourceLocally(int slot, String source) {
+        sources[slot] = source;
     }
 
     // Server side.

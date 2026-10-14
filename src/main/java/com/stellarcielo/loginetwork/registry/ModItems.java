@@ -20,6 +20,7 @@ public final class ModItems {
     public static final DeferredItem<BlockItem> DHCP_SERVER = ITEMS.registerSimpleBlockItem(ModBlocks.DHCP_SERVER);
     public static final DeferredItem<BlockItem> ACCESS_SWITCH = ITEMS.registerSimpleBlockItem(ModBlocks.ACCESS_SWITCH);
     public static final DeferredItem<BlockItem> ROUTER = ITEMS.registerSimpleBlockItem(ModBlocks.ROUTER);
+    public static final DeferredItem<BlockItem> DNS_SERVER = ITEMS.registerSimpleBlockItem(ModBlocks.DNS_SERVER);
 
     public static final DeferredItem<ObservationToolItem> OBSERVATION_TOOL = ITEMS.registerItem("observation_tool", ObservationToolItem::new,
             p -> p.stacksTo(1));

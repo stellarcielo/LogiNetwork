@@ -45,11 +45,12 @@ public final class HostAgent {
     private static final int OFFER_COLLECT_TICKS = 10;
     private static final long ADVERTISE_REFRESH_TICKS = 600;
 
-    private record FilterEntry(int slot, ItemStack item, int target) {
+    private record FilterEntry(int slot, ItemStack item, int target, String source) {
         static final Codec<FilterEntry> CODEC = RecordCodecBuilder.create(instance -> instance.group(
                 Codec.INT.fieldOf("slot").forGetter(FilterEntry::slot),
                 ItemStack.CODEC.fieldOf("item").forGetter(FilterEntry::item),
-                Codec.INT.fieldOf("target").forGetter(FilterEntry::target)
+                Codec.INT.fieldOf("target").forGetter(FilterEntry::target),
+                Codec.STRING.optionalFieldOf("source", "").forGetter(FilterEntry::source)
         ).apply(instance, FilterEntry::new));
     }
 
@@ -60,6 +61,8 @@ public final class HostAgent {
         final long id;
         final ItemStack item;
         final int requested;
+        // Set when the filter names a supplier: REQUESTs go to it directly instead of being broadcast.
+        @Nullable Ipv4Address target;
         int received;
         int inTransit;
         final Map<Ipv4Address, Integer> reserving = new HashMap<>();
@@ -122,6 +125,8 @@ public final class HostAgent {
     private final NetworkInterfaceBlockEntity owner;
     private final SimpleContainer filters;
     private final int[] targets = new int[FILTER_SLOTS];
+    // Optional supplier host name per filter slot ("" for any supplier).
+    private final String[] sources = new String[FILTER_SLOTS];
     private boolean supply = true;
     private final Map<Long, Request> requests = new LinkedHashMap<>();
     private final Map<Long, Shipment> shipments = new HashMap<>();
@@ -157,9 +162,21 @@ public final class HostAgent {
         owner.setChanged();
     }
 
+    public String source(int slot) {
+        return sources[slot] == null ? "" : sources[slot];
+    }
+
+    public void setSource(int slot, String source) {
+        sources[slot] = source.trim();
+        owner.setChanged();
+    }
+
     public void setFilter(int slot, ItemStack item, int target) {
         filters.setItem(slot, item.isEmpty() ? ItemStack.EMPTY : item.copyWithCount(1));
         setTarget(slot, item.isEmpty() ? 0 : target);
+        if (item.isEmpty()) {
+            setSource(slot, "");
+        }
     }
 
     public boolean supplies() {
@@ -220,11 +237,31 @@ public final class HostAgent {
                 continue;
             }
             int deficit = targets[slot] - count(inventory, filter);
-            if (deficit > 0) {
-                Request request = new Request(NetworkManager.get(level).nextRequestId(), filter.copyWithCount(1), deficit, now);
-                requests.put(request.id, request);
-                controlPlane(level).broadcast(level, content(ControlMessageType.REQUEST).request(request.id, request.item, deficit, 0));
+            if (deficit <= 0) {
+                continue;
             }
+            Ipv4Address target = null;
+            if (!source(slot).isEmpty()) {
+                // A named supplier: wait until its address is known (the lookup runs in the background).
+                target = owner.resolver().lookupNow(level, source(slot)).orElse(null);
+                if (target == null) {
+                    continue;
+                }
+            }
+            Request request = new Request(NetworkManager.get(level).nextRequestId(), filter.copyWithCount(1), deficit, now);
+            request.target = target;
+            requests.put(request.id, request);
+            sendRequest(level, request, deficit);
+        }
+    }
+
+    // Broadcast to the segment, or straight to the named supplier.
+    private void sendRequest(ServerLevel level, Request request, int count) {
+        ControlMessage.Content content = content(ControlMessageType.REQUEST).request(request.id, request.item, count, 0);
+        if (request.target != null) {
+            sendTo(level, content, request.target);
+        } else {
+            controlPlane(level).broadcast(level, content);
         }
     }
 
@@ -352,7 +389,7 @@ public final class HostAgent {
                     request.lastProgress = now;
                     if (request.reserving.isEmpty() && request.inTransit == 0 && request.remaining() > 0) {
                         // Every reservation failed: ask the segment again for what is still missing.
-                        controlPlane(level).broadcast(level, content(ControlMessageType.REQUEST).request(request.id, request.item, request.remaining(), 0));
+                        sendRequest(level, request, request.remaining());
                     }
                 }
             }
@@ -478,7 +515,7 @@ public final class HostAgent {
         List<FilterEntry> entries = new ArrayList<>();
         for (int slot = 0; slot < FILTER_SLOTS; slot++) {
             if (!filters.getItem(slot).isEmpty()) {
-                entries.add(new FilterEntry(slot, filters.getItem(slot), targets[slot]));
+                entries.add(new FilterEntry(slot, filters.getItem(slot), targets[slot], source(slot)));
             }
         }
         output.store("filters", FilterEntry.CODEC.listOf(), entries);
@@ -489,11 +526,13 @@ public final class HostAgent {
         for (int slot = 0; slot < FILTER_SLOTS; slot++) {
             filters.setItem(slot, ItemStack.EMPTY);
             targets[slot] = 0;
+            sources[slot] = "";
         }
         input.read("filters", FilterEntry.CODEC.listOf()).ifPresent(entries -> entries.forEach(entry -> {
             if (entry.slot() >= 0 && entry.slot() < FILTER_SLOTS) {
                 filters.setItem(entry.slot(), entry.item().copyWithCount(1));
                 targets[entry.slot()] = entry.target();
+                sources[entry.slot()] = entry.source();
             }
         }));
         supply = input.getBooleanOr("supply", true);

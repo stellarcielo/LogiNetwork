@@ -6,6 +6,7 @@ import com.stellarcielo.loginetwork.client.ClientTransitTracker;
 import com.stellarcielo.loginetwork.client.TransitItemRenderer;
 import com.stellarcielo.loginetwork.client.screen.AccessSwitchScreen;
 import com.stellarcielo.loginetwork.client.screen.DhcpServerScreen;
+import com.stellarcielo.loginetwork.client.screen.DnsServerScreen;
 import com.stellarcielo.loginetwork.client.screen.NetworkInterfaceScreen;
 import com.stellarcielo.loginetwork.client.screen.RouterScreen;
 import com.stellarcielo.loginetwork.client.screen.StockKeeperScreen;
@@ -13,6 +14,7 @@ import com.stellarcielo.loginetwork.client.screen.TracerouteScreen;
 import com.stellarcielo.loginetwork.network.payload.ControlPathPayload;
 import com.stellarcielo.loginetwork.network.payload.HighlightPathPayload;
 import com.stellarcielo.loginetwork.network.payload.OpenDhcpScreenPayload;
+import com.stellarcielo.loginetwork.network.payload.OpenDnsScreenPayload;
 import com.stellarcielo.loginetwork.network.payload.OpenInterfaceScreenPayload;
 import com.stellarcielo.loginetwork.network.payload.OpenRouterScreenPayload;
 import com.stellarcielo.loginetwork.network.payload.OpenSwitchScreenPayload;
@@ -65,6 +67,7 @@ public class LogiNetworkClient {
         event.register(OpenSwitchScreenPayload.TYPE, (payload, context) -> Minecraft.getInstance().gui.setScreen(new AccessSwitchScreen(payload)));
         event.register(ControlPathPayload.TYPE, (payload, context) -> ClientControlTracker.onPath(payload));
         event.register(OpenRouterScreenPayload.TYPE, (payload, context) -> Minecraft.getInstance().gui.setScreen(new RouterScreen(payload)));
+        event.register(OpenDnsScreenPayload.TYPE, (payload, context) -> Minecraft.getInstance().gui.setScreen(new DnsServerScreen(payload)));
         event.register(OpenTraceroutePayload.TYPE, (payload, context) -> Minecraft.getInstance().gui.setScreen(new TracerouteScreen(payload.pos())));
         event.register(HighlightPathPayload.TYPE, (payload, context) -> {
             if (Minecraft.getInstance().level != null) {

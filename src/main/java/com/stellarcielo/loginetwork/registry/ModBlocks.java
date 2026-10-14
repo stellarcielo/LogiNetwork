@@ -5,6 +5,7 @@ import com.stellarcielo.loginetwork.block.AccessSwitchBlock;
 import com.stellarcielo.loginetwork.block.CableBlock;
 import com.stellarcielo.loginetwork.block.CableType;
 import com.stellarcielo.loginetwork.block.DiscardChestBlock;
+import com.stellarcielo.loginetwork.block.DnsServerBlock;
 import com.stellarcielo.loginetwork.block.DhcpServerBlock;
 import com.stellarcielo.loginetwork.block.NetworkInterfaceBlock;
 import com.stellarcielo.loginetwork.block.RouterBlock;
@@ -37,6 +38,9 @@ public final class ModBlocks {
             p -> p.mapColor(MapColor.COLOR_ORANGE).strength(1.5f).sound(SoundType.COPPER));
 
     public static final DeferredBlock<RouterBlock> ROUTER = BLOCKS.registerBlock("router", RouterBlock::new,
+            p -> p.mapColor(MapColor.COLOR_ORANGE).strength(1.5f).sound(SoundType.COPPER));
+
+    public static final DeferredBlock<DnsServerBlock> DNS_SERVER = BLOCKS.registerBlock("dns_server", DnsServerBlock::new,
             p -> p.mapColor(MapColor.COLOR_ORANGE).strength(1.5f).sound(SoundType.COPPER));
 
     private ModBlocks() {}

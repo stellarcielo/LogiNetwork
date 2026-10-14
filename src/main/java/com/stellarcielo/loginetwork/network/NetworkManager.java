@@ -201,6 +201,10 @@ public final class NetworkManager extends SavedData {
         if (source == null) {
             return;
         }
+        if (level.getBlockEntity(nodePos) instanceof NetworkInterfaceBlockEntity host && !host.extractTarget().isEmpty()) {
+            extractToNamedHost(level, host, inventoryPos, source, gameTime);
+            return;
+        }
         CableNetwork network = network(level, nodePos);
         for (int slot = 0; slot < source.size(); slot++) {
             ItemResource resource = source.getResource(slot);
@@ -230,6 +234,55 @@ public final class NetworkManager extends SavedData {
             if (level.getBlockEntity(nodePos) instanceof NetworkInterfaceBlockEntity host) {
                 packet.priority = host.priority();
             }
+            launch(level, packet, gameTime);
+            return;
+        }
+    }
+
+    // Extraction with a target host name: resolve it, then send to the inventory in front of that host, routers included.
+    private void extractToNamedHost(ServerLevel level, NetworkInterfaceBlockEntity host, BlockPos inventoryPos, ResourceHandler<ItemResource> source,
+            long gameTime) {
+        Ipv4Address target = host.resolver().lookupNow(level, host.extractTarget()).orElse(null);
+        if (target == null || !host.hasUsableAddress() || host.assigned() == null) {
+            return;
+        }
+        List<BlockPos> route = routeToInventory(level, host.getBlockPos(), target, nextId);
+        if (route == null) {
+            return;
+        }
+        BlockPos targetInventory = route.get(route.size() - 1);
+        BlockPos targetInterface = route.get(route.size() - 2);
+        ResourceHandler<ItemResource> destination = itemHandler(level, targetInventory, directionBetween(targetInventory, targetInterface));
+        if (destination == null) {
+            return;
+        }
+        for (int slot = 0; slot < source.size(); slot++) {
+            ItemResource resource = source.getResource(slot);
+            if (resource.isEmpty()) {
+                continue;
+            }
+            int wanted = Math.min(EXTRACT_AMOUNT, source.getAmountAsInt(slot));
+            int accepts;
+            try (Transaction tx = Transaction.openRoot()) {
+                accepts = destination.insert(resource, wanted, tx);
+            }
+            if (accepts <= 0) {
+                continue;
+            }
+            int extracted;
+            try (Transaction tx = Transaction.openRoot()) {
+                extracted = source.extract(slot, resource, accepts, tx);
+                tx.commit();
+            }
+            if (extracted <= 0) {
+                continue;
+            }
+            List<BlockPos> nodes = new ArrayList<>();
+            nodes.add(inventoryPos);
+            nodes.addAll(route);
+            TransitPacket packet = new TransitPacket(nextId++, resource.toStack(extracted), nodes, true, 0, gameTime, 0, inventoryPos, false, 0,
+                    TransitPacket.NO_REQUEST, host.assigned().address(), target);
+            packet.priority = host.priority();
             launch(level, packet, gameTime);
             return;
         }
@@ -533,7 +586,8 @@ public final class NetworkManager extends SavedData {
             return true;
         }
         packet.reroutes++;
-        if (packet.requestId != TransitPacket.NO_REQUEST) {
+        // Addressed packets (request deliveries, extraction to a named host) find their way by address.
+        if (packet.destinationAddress != null) {
             List<BlockPos> route = null;
             if (!packet.returning && comingOutOf == null && packet.destinationAddress != null) {
                 route = routeToInventory(level, fromNode, packet.destinationAddress, packet.id);
